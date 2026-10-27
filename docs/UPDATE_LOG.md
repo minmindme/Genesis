@@ -1,5 +1,37 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 19 轮：三个致命洞——从"演示级"到"引擎级"
+
+### 更新内容（外部评审"三件事"行动清单，一条不改）
+
+**洞 1：GetData 实例级化（类型级 API 冒充实例级）**
+- `UniversalActionBus.GetDataAsync` 重写：`GetByIdAsync(entityId)` 定位实体行 + `GetByParentIdAsync(entityId)` 指针追逐子行 → 合并子图 → 网关组装。不再走类型级 `GetSubGraphAsync` 后挑"第一条实体行"（旧实现同类型两实体时返回任意一条）。
+- 回归护栏 `Bus_GetData_SameTypeTwoEntities_ReturnsOwnSubgraphOnly`：同类型插 Alice/Bob 两个 Student（图模式），各自 GetData 断言只含自己的数据——该测试在旧实现下必红（两次都返回 Alice）。
+
+**洞 2：定义 U + 统一 BulkInsertAsync 语义（换引擎不变正确性）**
+- `UniversalEntityRepository.BulkInsertAsync` 事务化 upsert：`BeginTransaction` → OPENJSON 参数化 `DELETE WHERE Id IN (...)` → `SqlBulkCopy(TableLock, transaction)` → `Commit`。同 Id 重写 = 覆盖，与 InMemory 的 upsert 语义对齐，消灭"换一行 StorageProvider 数据第二次写就主键冲突"。
+
+**洞 3：并发/事务语义加固**
+- `PolicyDrivenStore.DeleteAsync`：先 `GetByIdAsync`（解密 + 租户校验）可见才委托内层软删——知道 Guid 不再能删别人的行。
+- `MetaCache` 快照化：全部缓存（Types/Engines/SecurityPolicies/Commands/UiSchemas/StorageProviderName）收束进不可变 `MetaSnapshot`，`LoadAsync` 在局部构建完整快照后**单引用原子替换**（volatile 发布）。并发读要么看到旧完整快照、要么看到新完整快照——永不看到 Clear 后的半成品，也不看到"新类型 + 旧命令"混合态。
+- `TestRunner` 支持 `Fact.Skip`：`BENCH:` 前缀约定为环境门禁——5 个 Benchmark 默认跳过（大数据压测环境敏感，本轮回归两次出现 SQL 超时 5→2 失败漂移），设 `GENESIS_BENCH=1` 可启用。完整移出（独立 Benchmarks 项目/Testcontainers/CI）留待测试基建轮。
+
+### 验收
+
+- `dotnet build Genesis.slnx`：0 警告 0 错误。
+- 全量回归：**57 通过 / 0 失败 / 5 跳过（基准门禁）**。
+- 新增洞 1 回归测试通过（Alice/Bob 各见其数据）。
+
+### 诚实声明
+
+- 洞 1 修复先于回归护栏落地（时序与"先红后绿"理想顺序相反）——护栏的"旧实现下必红"由代码走读确认：旧实现在类型级子图中挑第一条实体行，Alice 先插则 Bob 的 GetData 必含 Alice 不含 Bob。
+- `GENESIS_BENCH=1` 的启用路径本轮未实际执行（避免 100K 压测超时），列为未验证项。
+- 六字段分别替换方案被快照类方案取代：前者在多字段赋值间隙可被读方观察到混合快照，单引用替换才是严格原子。
+
+### 未改旁支
+
+测试基建解放（Testcontainers/独立库/并行 CI）、Version 乐观锁、入边级联清理、白皮书 2.0、SM4、雪花 ID、GitHub 推送同步。
+
 ## 2026-10-27 第 18 轮：终局演示——ImportSystem 一发建出"学生管理系统"
 
 ### 更新内容

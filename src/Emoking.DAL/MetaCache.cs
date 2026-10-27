@@ -16,6 +16,8 @@ namespace Emoking.DAL;
 /// 缓存两类元数据：
 ///   1. MetaType：实体类型定义（TypeId → 类型名、字段列表）
 ///   2. MetaEngine：引擎指令（TypeId → 路由目标、处理器类型）
+/// 第 19 轮洞 3 修复：全部缓存收束进不可变快照 <see cref="MetaCache.MetaSnapshot"/>，
+/// LoadAsync 在局部构建完整快照后单引用原子替换——并发读永不看到半成品或混合态。
 /// </remarks>
 public sealed class MetaType
 {
@@ -70,7 +72,7 @@ public sealed class MetaEngine
 }
 
 /// <summary>
-/// 元数据缓存服务，加载并维护 Role=1 和 Role=4 的内存快照。
+/// 元数据缓存服务，加载并维护 Role=1/4/5/7/8 的内存快照。
 /// </summary>
 public sealed class MetaCache
 {
@@ -100,26 +102,41 @@ public sealed class MetaCache
     private static readonly Guid TenantPolicyRowId = new("00000000-0000-0000-0000-000000000905");
     private static readonly Guid RateLimitPolicyRowId = new("00000000-0000-0000-0000-000000000906");
 
-    // 池中解析出的存储引擎名——无指令时默认 SqlServer（唯一带完整 ACID 的保守选项）。
-    private string? _storageProviderName;
-
-    // 安全策略缓存：策略名 → 键值对集合（Role=5 解析结果）。
-    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _securityPolicies = new(StringComparer.Ordinal);
-
-    // CLI 命令缓存：命令名 → 键值对集合（Role=7 解析结果）。
-    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _commands = new(StringComparer.Ordinal);
-
-    // UI Schema 缓存：UI 名 → 键值对集合（Role=8 解析结果）。
-    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _uiSchemas = new(StringComparer.Ordinal);
-
-    // 实体类型缓存：TypeId → MetaType
-    private readonly ConcurrentDictionary<Guid, MetaType> _types = new();
-
-    // 引擎指令缓存：TypeId → MetaEngine
-    private readonly ConcurrentDictionary<Guid, MetaEngine> _engines = new();
+    // 元数据快照——LoadAsync 在局部构建完整快照后单引用原子替换（volatile 保证发布可见性），
+    // 并发读永不看到半成品（洞 3 修复）。
+    // 初始为空快照——LoadAsync 首次执行前读方法返回空结果，与旧版空缓存行为一致。
+    private volatile MetaSnapshot _snapshot = new();
 
     // 仓储引用，用于启动时从数据库拉元数据与自播种。
     private readonly UniversalEntityRepository _repository;
+
+    /// <summary>
+    /// 不可变元数据快照——一次 LoadAsync 的全部解析结果。
+    /// </summary>
+    /// <remarks>
+    /// 快照一旦发布即不再修改；热重载时构造全新快照整体替换。
+    /// 读方法开头取局部引用即可保证方法内看到的是同一份完整快照。
+    /// </remarks>
+    private sealed class MetaSnapshot
+    {
+        /// <summary>实体类型缓存：TypeId → MetaType。</summary>
+        public readonly ConcurrentDictionary<Guid, MetaType> Types = new();
+
+        /// <summary>引擎指令缓存：TypeId → MetaEngine。</summary>
+        public readonly ConcurrentDictionary<Guid, MetaEngine> Engines = new();
+
+        /// <summary>安全策略缓存：策略名 → 键值对。</summary>
+        public readonly ConcurrentDictionary<string, Dictionary<string, string>> SecurityPolicies = new(StringComparer.Ordinal);
+
+        /// <summary>CLI 命令缓存：命令名 → 键值对。</summary>
+        public readonly ConcurrentDictionary<string, Dictionary<string, string>> Commands = new(StringComparer.Ordinal);
+
+        /// <summary>UI Schema 缓存：UI 名 → 键值对。</summary>
+        public readonly ConcurrentDictionary<string, Dictionary<string, string>> UiSchemas = new(StringComparer.Ordinal);
+
+        /// <summary>存储引擎名——无指令时保持 null，读方回退默认 SqlServer。</summary>
+        public string? StorageProviderName;
+    }
 
     /// <summary>
     /// 注入仓储初始化缓存。
@@ -136,22 +153,21 @@ public sealed class MetaCache
     // ============================================================================
 
     /// <summary>
-    /// 启动时从数据库加载 Role=1 与 Role=4 元数据到内存——引擎从同构池中读取自己的"创世法则"。
+    /// 启动时从数据库加载 Role=1/4/5/7/8 元数据到内存——引擎从同构池中读取自己的"创世法则"。
     /// 数据池为空时自动播种创世行（幂等），随后重新加载。
     /// </summary>
+    /// <remarks>
+    /// 第 19 轮洞 3 修复：加载全程在局部快照中构建，不触碰已发布的 <c>_snapshot</c>；
+    /// 全部解析完成后末尾单条赋值原子替换——并发读要么看到旧完整快照，要么看到新完整快照。
+    /// </remarks>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>表示异步加载操作完成的任务。</returns>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        // 清空旧缓存——支持热重载。
-        _types.Clear();
-        _engines.Clear();
-        _securityPolicies.Clear();
-        _commands.Clear();
-        _uiSchemas.Clear();
-        _storageProviderName = null;
+        // 在局部快照中构建——加载全程不动已发布的 _snapshot，并发读始终看到上一份完整快照。
+        var snapshot = new MetaSnapshot();
 
-        // 一次性拉取全部 Role=1 与 Role=4 行——安全策略（Role=5）按需增量拉取，见下方。
+        // 一次性拉取全部 Role=1 与 Role=4 行——安全策略、命令、UI 行分别单独拉取。
         var metaRows = await _repository.GetByRolesAsync(
             [UniversalEntity.RoleMeta, UniversalEntity.RoleEngine],
             cancellationToken);
@@ -177,7 +193,7 @@ public sealed class MetaCache
             // 把创世法则写进同构池。
             await SeedGenesisRowsAsync(cancellationToken);
 
-            // 播种后重新拉取——保证内存缓存与库中内容严格一致。
+            // 播种后重新拉取——保证内存快照与库中内容严格一致。
             metaRows = await _repository.GetByRolesAsync(
                 [UniversalEntity.RoleMeta, UniversalEntity.RoleEngine],
                 cancellationToken);
@@ -188,17 +204,20 @@ public sealed class MetaCache
                 cancellationToken);
         }
 
-        // 把同构行解析为内存元数据结构。
-        ParseMetaRows(metaRows);
+        // 把同构行解析进局部快照——类型与引擎指令。
+        ParseMetaRows(metaRows, snapshot);
 
-        // 解析安全策略行。
-        ParseSecurityPolicies(policyRows);
+        // 把安全策略行解析进局部快照。
+        ParseSecurityPolicies(policyRows, snapshot);
 
-        // 解析 CLI 命令行。
-        ParseCommands(commandRows);
+        // 把 CLI 命令行解析进局部快照。
+        ParseCommands(commandRows, snapshot);
 
-        // 解析 UI Schema 行。
-        ParseUiSchemas(uiRows);
+        // 把 UI Schema 行解析进局部快照。
+        ParseUiSchemas(uiRows, snapshot);
+
+        // 全部解析完成后单引用原子替换——这一条赋值是发布点，读方自此读到完整新快照。
+        _snapshot = snapshot;
     }
 
     /// <summary>
@@ -297,10 +316,11 @@ public sealed class MetaCache
     }
 
     /// <summary>
-    /// 把同构池中的 Role=1/4 行解析为内存元数据结构。
+    /// 把同构池中的 Role=1/4 行解析为内存元数据结构，写入传入的局部快照。
     /// </summary>
     /// <param name="rows">Role=1 与 Role=4 的行集合。</param>
-    private void ParseMetaRows(IReadOnlyList<UniversalEntity> rows)
+    /// <param name="snapshot">本次加载的局部快照——解析结果全部落进它，不触碰已发布快照。</param>
+    private static void ParseMetaRows(IReadOnlyList<UniversalEntity> rows, MetaSnapshot snapshot)
     {
         // 第一遍：解析实体类型定义行（Role=1 且 ParentId 为空）。
         foreach (var row in rows)
@@ -326,8 +346,8 @@ public sealed class MetaCache
                     PropertyTypeIds = new Dictionary<string, Guid>()
                 };
 
-                // 加入类型缓存。
-                _types.TryAdd(metaType.TypeId, metaType);
+                // 加入局部快照的类型缓存。
+                snapshot.Types.TryAdd(metaType.TypeId, metaType);
             }
         }
 
@@ -349,7 +369,7 @@ public sealed class MetaCache
             }
 
             // 找到属性所属的类型——类型行必须已注册。
-            if (!_types.TryGetValue(row.ParentId.Value, out var ownerType))
+            if (!snapshot.Types.TryGetValue(row.ParentId.Value, out var ownerType))
             {
                 // 类型缺失时容错跳过——真实部署应告警。
                 continue;
@@ -406,15 +426,15 @@ public sealed class MetaCache
                 Settings = command
             };
 
-            // 发现存储引擎选择指令时记录引擎名。
+            // 发现存储引擎选择指令时记录引擎名到局部快照。
             if (command.TryGetValue("StorageProvider", out var providerName))
             {
-                // 记录到私有字段。
-                _storageProviderName = providerName;
+                // 写入局部快照的引擎名字段。
+                snapshot.StorageProviderName = providerName;
             }
 
-            // 加入引擎缓存——所有 Role=4 行都进入缓存，不再按路由字段过滤。
-            _engines.TryAdd(metaEngine.TypeId, metaEngine);
+            // 加入局部快照的引擎缓存——所有 Role=4 行都进入缓存，不再按路由字段过滤。
+            snapshot.Engines.TryAdd(metaEngine.TypeId, metaEngine);
         }
     }
 
@@ -424,8 +444,11 @@ public sealed class MetaCache
     /// <returns>引擎名：SqlServer / InMemory / FasterKv。</returns>
     public string GetStorageProviderName()
     {
+        // 取当前快照的局部引用——方法内始终看到同一份快照，不会中途被热重载切换。
+        var snapshot = _snapshot;
+
         // 无指令回退保守默认。
-        return _storageProviderName ?? "SqlServer";
+        return snapshot.StorageProviderName ?? "SqlServer";
     }
 
     /// <summary>
@@ -439,8 +462,11 @@ public sealed class MetaCache
     /// <returns>C# 类型全名；未绑定返回 null。</returns>
     public string? GetCSharpTypeName(Guid entityTypeId)
     {
+        // 取当前快照的局部引用——遍历期间快照不会被热重载替换。
+        var snapshot = _snapshot;
+
         // 遍历全部引擎指令行。
-        foreach (var engine in _engines.Values)
+        foreach (var engine in snapshot.Engines.Values)
         {
             // 只看作用于该实体类型的指令。
             if (engine.TargetEntityTypeId != entityTypeId)
@@ -473,8 +499,11 @@ public sealed class MetaCache
     /// <returns>存储模式名（"Snapshot"）；未配置返回 null（默认图模式）。</returns>
     public string? GetStorageMode(Guid entityTypeId)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 遍历全部引擎指令行。
-        foreach (var engine in _engines.Values)
+        foreach (var engine in snapshot.Engines.Values)
         {
             // 只看作用于该实体类型的指令。
             if (engine.TargetEntityTypeId != entityTypeId)
@@ -502,8 +531,11 @@ public sealed class MetaCache
     /// <returns>边定义键值对（含 EdgeType/From/To）；未注册返回 null。</returns>
     public IReadOnlyDictionary<string, string>? GetEdgeDefinition(Guid edgeTypeId)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 遍历全部引擎指令行。
-        foreach (var engine in _engines.Values)
+        foreach (var engine in snapshot.Engines.Values)
         {
             // 指令带 EdgeType 键且 TargetEntityTypeId 指向该边类型时命中。
             if (engine.Settings.TryGetValue("EdgeType", out _)
@@ -525,8 +557,11 @@ public sealed class MetaCache
     /// <returns>类型行 Id；未注册返回 null。</returns>
     public Guid? GetTypeIdByName(string typeName)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 遍历类型缓存按名匹配。
-        foreach (var metaType in _types.Values)
+        foreach (var metaType in snapshot.Types.Values)
         {
             // 名称命中。
             if (string.Equals(metaType.TypeName, typeName, StringComparison.Ordinal))
@@ -541,10 +576,11 @@ public sealed class MetaCache
     }
 
     /// <summary>
-    /// 解析 Role=8 UI Schema 行——UI 名 → 键值对集合。
+    /// 解析 Role=8 UI Schema 行——UI 名 → 键值对集合，写入传入的局部快照。
     /// </summary>
     /// <param name="rows">Role=8 行集合。</param>
-    private void ParseUiSchemas(IReadOnlyList<UniversalEntity> rows)
+    /// <param name="snapshot">本次加载的局部快照。</param>
+    private static void ParseUiSchemas(IReadOnlyList<UniversalEntity> rows, MetaSnapshot snapshot)
     {
         // 逐行解析。
         foreach (var row in rows)
@@ -559,8 +595,8 @@ public sealed class MetaCache
                 continue;
             }
 
-            // 以 UI 名为键缓存。
-            _uiSchemas[uiName] = settings;
+            // 以 UI 名为键写入局部快照。
+            snapshot.UiSchemas[uiName] = settings;
         }
     }
 
@@ -570,18 +606,22 @@ public sealed class MetaCache
     /// <returns>UI 名 → 键值对集合（含 Entity/Fields/Action）。</returns>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> GetUiSchemas()
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 导出只读视图。
-        return _uiSchemas.ToDictionary(
+        return snapshot.UiSchemas.ToDictionary(
             pair => pair.Key,
             pair => (IReadOnlyDictionary<string, string>)pair.Value,
             StringComparer.Ordinal);
     }
 
     /// <summary>
-    /// 解析 Role=7 CLI 命令行——命令名 → 键值对集合。
+    /// 解析 Role=7 CLI 命令行——命令名 → 键值对集合，写入传入的局部快照。
     /// </summary>
     /// <param name="rows">Role=7 行集合。</param>
-    private void ParseCommands(IReadOnlyList<UniversalEntity> rows)
+    /// <param name="snapshot">本次加载的局部快照。</param>
+    private static void ParseCommands(IReadOnlyList<UniversalEntity> rows, MetaSnapshot snapshot)
     {
         // 逐行解析。
         foreach (var row in rows)
@@ -596,8 +636,8 @@ public sealed class MetaCache
                 continue;
             }
 
-            // 以命令名为键缓存。
-            _commands[commandName] = settings;
+            // 以命令名为键写入局部快照。
+            snapshot.Commands[commandName] = settings;
         }
     }
 
@@ -608,8 +648,11 @@ public sealed class MetaCache
     /// <returns>命令定义键值对（Command/Args/Steps）；未注册返回 null。</returns>
     public IReadOnlyDictionary<string, string>? GetCommand(string commandName)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 从命令缓存取值。
-        return _commands.TryGetValue(commandName, out var settings) ? settings : null;
+        return snapshot.Commands.TryGetValue(commandName, out var settings) ? settings : null;
     }
 
     /// <summary>
@@ -618,15 +661,19 @@ public sealed class MetaCache
     /// <returns>命令名集合（无序）。</returns>
     public IReadOnlyCollection<string> GetCommandNames()
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 导出命令名。
-        return _commands.Keys.ToList();
+        return snapshot.Commands.Keys.ToList();
     }
 
     /// <summary>
-    /// 解析 Role=5 安全策略行——策略名 → 键值对集合。
+    /// 解析 Role=5 安全策略行——策略名 → 键值对集合，写入传入的局部快照。
     /// </summary>
     /// <param name="rows">Role=5 行集合。</param>
-    private void ParseSecurityPolicies(IReadOnlyList<UniversalEntity> rows)
+    /// <param name="snapshot">本次加载的局部快照。</param>
+    private static void ParseSecurityPolicies(IReadOnlyList<UniversalEntity> rows, MetaSnapshot snapshot)
     {
         // 逐行解析。
         foreach (var row in rows)
@@ -641,8 +688,8 @@ public sealed class MetaCache
                 continue;
             }
 
-            // 以策略名为键缓存——同名策略以最后一条为准（池中按 Id 升序，尾部覆盖头部）。
-            _securityPolicies[policyName] = settings;
+            // 以策略名为键写入局部快照——同名策略以最后一条为准（池中按 Id 升序，尾部覆盖头部）。
+            snapshot.SecurityPolicies[policyName] = settings;
         }
     }
 
@@ -653,8 +700,11 @@ public sealed class MetaCache
     /// <returns>策略键值对集合；未配置返回 null。</returns>
     public IReadOnlyDictionary<string, string>? GetSecurityPolicy(string policyName)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 从策略缓存取值。
-        return _securityPolicies.TryGetValue(policyName, out var settings) ? settings : null;
+        return snapshot.SecurityPolicies.TryGetValue(policyName, out var settings) ? settings : null;
     }
 
     /// <summary>
@@ -709,8 +759,11 @@ public sealed class MetaCache
     /// <returns>找到返回 <see cref="MetaType"/>；未找到返回 <see langword="null"/>。</returns>
     public MetaType? GetTypeByTypeId(Guid typeId)
     {
-        // 从 ConcurrentDictionary 尝试取值。
-        _types.TryGetValue(typeId, out var meta);
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
+        // 从局部快照的类型缓存尝试取值。
+        snapshot.Types.TryGetValue(typeId, out var meta);
 
         // 返回结果。
         return meta;
@@ -723,8 +776,11 @@ public sealed class MetaCache
     /// <returns>属性名（如 "Name"）；未找到返回 <see langword="null"/>。</returns>
     public string? GetPropertyNameByTypeId(Guid propertyTypeId)
     {
-        // 遍历所有实体类型——原型期实体数量很少，线性遍历足够。
-        foreach (var metaType in _types.Values)
+        // 取当前快照的局部引用——原型期实体数量很少，线性遍历足够。
+        var snapshot = _snapshot;
+
+        // 遍历所有实体类型。
+        foreach (var metaType in snapshot.Types.Values)
         {
             // 在 PropertyTypeIds 里找匹配的 value。
             foreach (var kv in metaType.PropertyTypeIds)
@@ -749,8 +805,11 @@ public sealed class MetaCache
     /// <returns>路由目标类型名；未找到返回 <see langword="null"/>。</returns>
     public string? GetEngineRouteTarget(Guid entityTypeId)
     {
+        // 取当前快照的局部引用。
+        var snapshot = _snapshot;
+
         // 遍历所有引擎元数据，匹配 TargetEntityTypeId。
-        foreach (var engine in _engines.Values)
+        foreach (var engine in snapshot.Engines.Values)
         {
             // 匹配到则返回路由目标。
             if (engine.TargetEntityTypeId == entityTypeId)
@@ -767,5 +826,10 @@ public sealed class MetaCache
     /// <summary>
     /// 全量导出——供测试断言验证缓存内容。
     /// </summary>
-    public IReadOnlyDictionary<Guid, MetaType> GetAllTypes() => _types;
+    /// <returns>当前快照的类型缓存只读视图。</returns>
+    public IReadOnlyDictionary<Guid, MetaType> GetAllTypes()
+    {
+        // 取当前快照的局部引用并导出类型缓存。
+        return _snapshot.Types;
+    }
 }

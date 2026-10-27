@@ -259,17 +259,27 @@ public sealed class PolicyDrivenStore : IUniversalStore
     }
 
     /// <summary>
-    /// 按 Id 软删——元数据操作，直接委托内层。
+    /// 按 Id 软删——**先做租户可见性校验**：本租户不可见的行不可删（洞 3 修复：知道 Id 也不再能删别人的行）。
     /// </summary>
     /// <param name="id">行 Id。</param>
     /// <param name="cancellationToken">取消令牌。</param>
-    /// <returns>命中返回 true。</returns>
-    public Task<bool> DeleteAsync(
+    /// <returns>本租户可见且删除成功返回 true；否则 false。</returns>
+    public async Task<bool> DeleteAsync(
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        // 透传内层。
-        return _inner.DeleteAsync(id, cancellationToken);
+        // 先点查——解密失败或租户不符时返回 null，此时拒绝删除。
+        var row = await GetByIdAsync(id, cancellationToken);
+
+        // 不可见即不可删。
+        if (row is null)
+        {
+            // 拒绝。
+            return false;
+        }
+
+        // 委托内层软删。
+        return await _inner.DeleteAsync(id, cancellationToken);
     }
 
     /// <summary>

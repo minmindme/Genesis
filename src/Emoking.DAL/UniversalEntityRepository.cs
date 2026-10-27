@@ -174,14 +174,35 @@ public sealed class UniversalEntityRepository
         // 第 1 步：把全部行在内存中压缩为同构数据包（DataTable）。
         var table = BuildBulkTable(entities);
 
-        // 拿到已打开的连接。
+        // 拿到已打开的连接与显式事务——先删后插在同一事务内（upsert 语义，三引擎一致）。
         using var connection = _dbContext.CreateConnection();
+        using var transaction = connection.BeginTransaction();
 
-        // 第 2 步：构造 SqlBulkCopy——单次往返整包灌入，启用流式传输降低内存峰值。
+        // 第 2 步：同 Id 旧行先删除——BulkCopy 无法覆盖主键，delete+insert 组成 upsert。
+        await using (var deleteCommand = connection.CreateCommand())
+        {
+            // 绑定事务。
+            deleteCommand.Transaction = transaction;
+
+            // 按 Id 集合删除旧行——OPENJSON 参数化，零拼接。
+            deleteCommand.CommandText = @"
+                DELETE FROM [dbo].[UniversalEntity]
+                WHERE [Id] IN (SELECT CAST([value] AS UNIQUEIDENTIFIER) FROM OPENJSON(@IdsJson))";
+
+            // 序列化 Id 集合。
+            var idsJson = System.Text.Json.JsonSerializer.Serialize(entities.Select(entity => entity.Id).ToList());
+
+            // 绑定参数。
+            deleteCommand.Parameters.AddWithValue("@IdsJson", idsJson);
+
+            // 执行删除。
+            await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // 第 3 步：构造 SqlBulkCopy——单次往返整包灌入，挂在同一事务上。
         // SqlBulkCopy 仅实现 IDisposable（无 DisposeAsync），故用同步 using。
-        // TableLock：批量装载期间取表锁，避免逐行/逐页锁升级开销，大幅缩短写入时间。
-        // 三参构造为唯一支持 options 的实例重载，外部事务传 null（本方法自带连接、无外部事务）。
-        using var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, null)
+        // TableLock：批量装载期间取表锁，避免逐行/逐页锁升级开销。
+        using var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, transaction)
         {
             // 目标表名。
             DestinationTableName = "[dbo].[UniversalEntity]",
@@ -198,8 +219,11 @@ public sealed class UniversalEntityRepository
         bulkCopy.ColumnMappings.Add("Version", "Version");
         bulkCopy.ColumnMappings.Add("IsDeleted", "IsDeleted");
 
-        // 第 3 步：执行整包写入。
+        // 第 4 步：执行整包写入。
         await bulkCopy.WriteToServerAsync(table, cancellationToken);
+
+        // 第 5 步：提交事务——先删后插原子生效。
+        transaction.Commit();
 
         // 返回写入行数——DataTable 行数即写入行数。
         return table.Rows.Count;

@@ -37,6 +37,7 @@ public static class TestRunner
         var total = 0;
         var passed = 0;
         var failed = 0;
+        var skipped = 0;
 
         foreach (var type in testTypes)
         {
@@ -52,6 +53,31 @@ public static class TestRunner
 
             foreach (var method in methods)
             {
+                // 读取 Fact 特性——Skip 文案约定 "BENCH:" 前缀的测试为环境门禁基准。
+                var fact = method.GetCustomAttribute<FactAttribute>();
+
+                // 基准门禁：Skip 文案以 BENCH: 开头且未设 GENESIS_BENCH=1 时跳过——
+                // 大数据量压测环境敏感（机器负载会拖红回归），默认移出回归（第 19 轮）。
+                if (fact is not null
+                    && fact.Skip is not null
+                    && fact.Skip.StartsWith("BENCH:", StringComparison.Ordinal)
+                    && !string.Equals(Environment.GetEnvironmentVariable("GENESIS_BENCH"), "1", StringComparison.Ordinal))
+                {
+                    // 计入跳过并说明原因。
+                    skipped++;
+                    Console.WriteLine($"  {method.Name} ... ↷ SKIP - {fact.Skip["BENCH:".Length..]}");
+                    continue;
+                }
+
+                // 普通静态 Skip（非 BENCH 门禁）同样跳过。
+                if (fact?.Skip is not null)
+                {
+                    // 计入跳过并说明原因。
+                    skipped++;
+                    Console.WriteLine($"  {method.Name} ... ↷ SKIP - {fact.Skip}");
+                    continue;
+                }
+
                 total++;
                 Console.Write($"  {method.Name} ... ");
 
@@ -84,7 +110,7 @@ public static class TestRunner
 
         // 汇总。
         Console.WriteLine($"\n=== SUMMARY ===");
-        Console.WriteLine($"Total: {total}, Passed: {passed}, Failed: {failed}");
+        Console.WriteLine($"Total: {total}, Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
 
         // 返回 exit code：全部通过 = 0，有失败 = 1。
         return failed == 0 ? 0 : 1;

@@ -303,8 +303,12 @@ public sealed class UniversalActionBus
     }
 
     /// <summary>
-    /// 读取业务数据——按实体行 Id 取回并按类型 StorageMode 组装。
+    /// 读取业务数据——**实例级**子图（实体行 + 该实体的子行），按类型 StorageMode 组装。
     /// </summary>
+    /// <remarks>
+    /// 第 19 轮修复（洞 1）：此前走类型级 GetSubGraph 再取"第一条实体行"，
+    /// 同类型多实体时返回任意一条。现改为实例级：GetById 定位实体行 + GetByParentId 指针追逐子行。
+    /// </remarks>
     /// <param name="args">参数：EntityId。</param>
     /// <returns>组装后的业务对象（强类型实例 / UniversalObject）。</returns>
     private async Task<object> GetDataAsync(IReadOnlyDictionary<string, string> args)
@@ -319,7 +323,7 @@ public sealed class UniversalActionBus
             throw new InvalidOperationException($"EntityId '{entityIdText}' 不是合法的 Guid。");
         }
 
-        // 点查。
+        // 实例级定位——实体行本身。
         var entityRow = await _store.GetByIdAsync(entityId);
 
         // 行不存在。
@@ -329,8 +333,9 @@ public sealed class UniversalActionBus
             throw new InvalidOperationException($"实体行 {entityId} 不存在或不可见。");
         }
 
-        // 子图预取——组装需要完整行集。
-        var subgraph = await _store.GetSubGraphAsync(entityRow.TypeId, entityRow.Role);
+        // 实例级子图——实体行 + 该实体的全部子行（只属于这一个实体，不含同类型其他实体）。
+        var subgraph = new List<UniversalEntity> { entityRow };
+        subgraph.AddRange(await _store.GetByParentIdAsync(entityId));
 
         // 网关组装（快照/强类型图/动态图自动分轨）。
         var assembled = _gateway.Assemble(subgraph, entityRow.TypeId);

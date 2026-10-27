@@ -164,6 +164,85 @@ public sealed class ActionBusTests
     }
 
     /// <summary>
+    /// 洞 1 回归护栏：同类型两个实体各自 GetData 必须返回各自的数据。
+    /// </summary>
+    /// <remarks>
+    /// 第 19 轮修复前（类型级 GetSubGraph + 挑第一条实体行），两次 GetData 都会返回先插入的 Alice——
+    /// 本测试在该实现下必红（Bob 的结果含 Alice 不含 Bob）。图模式（有属性行）是洞 1 的暴露主场。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_GetData_SameTypeTwoEntities_ReturnsOwnSubgraphOnly()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型（无 StorageMode 指令 = 默认图模式）。
+        await TruncateTableAsync();
+        var diskRepository = new UniversalEntityRepository(new EmokingDbContext());
+
+        // Student 类型行 + Name 属性行（第 17 轮 "Name:Type" 格式）。
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await diskRepository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：构造总线。
+        var bus = await BuildBusAsync(withCommand: false);
+
+        // 第 3 步：同类型插入两个实体——Alice 先、Bob 后。
+        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // Alice 载荷。
+            ["Data"] = "{\"Name\":\"Alice\"}"
+        }));
+        var bobId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 同类型。
+            ["TypeName"] = "Student",
+            // Bob 载荷。
+            ["Data"] = "{\"Name\":\"Bob\"}"
+        }));
+
+        // 两个实体行 Id 必须不同。
+        Assert.NotEqual(aliceId, bobId);
+
+        // 第 4 步：各自 GetData——序列化用不转义编码器保留中文与原文断言。
+        var aliceJson = System.Text.Json.JsonSerializer.Serialize(
+            await bus.ExecuteActionAsync("GetData", new Dictionary<string, string> { ["EntityId"] = aliceId.ToString() }),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                // 中文原样输出。
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        var bobJson = System.Text.Json.JsonSerializer.Serialize(
+            await bus.ExecuteActionAsync("GetData", new Dictionary<string, string> { ["EntityId"] = bobId.ToString() }),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                // 中文原样输出。
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+
+        // Alice 只见自己的数据。
+        Assert.Contains("Alice", aliceJson);
+        Assert.DoesNotContain("Bob", aliceJson);
+
+        // Bob 只见自己的数据——旧实现下这里会看到 Alice，必红。
+        Assert.Contains("Bob", bobJson);
+        Assert.DoesNotContain("Alice", bobJson);
+    }
+
+    /// <summary>
     /// 无法识别的动作显式失败——总线不猜意图。
     /// </summary>
     [Fact]
