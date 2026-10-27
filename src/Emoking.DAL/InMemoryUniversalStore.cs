@@ -123,6 +123,34 @@ public sealed class InMemoryUniversalStore : IUniversalStore
     }
 
     /// <summary>
+    /// 指针追逐——全字典扫描过滤 ParentId（进程内 O(n)，10 万行实测毫秒级）。
+    /// </summary>
+    /// <param name="parentId">父节点 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>全部 ParentId 命中的未删除行。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetByParentIdAsync(
+        Guid parentId,
+        CancellationToken cancellationToken = default)
+    {
+        // 全扫描过滤——纯内存比较，无 I/O。
+        var results = new List<UniversalEntity>();
+
+        // 遍历字典。
+        foreach (var pair in _rows)
+        {
+            // 匹配 ParentId 且未删除。
+            if (pair.Value.ParentId == parentId && !pair.Value.IsDeleted)
+            {
+                // 命中。
+                results.Add(pair.Value);
+            }
+        }
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(results);
+    }
+
+    /// <summary>
     /// 按 Id 软删——用 record with 表达式生成 IsDeleted = true 的副本覆盖原行。
     /// </summary>
     /// <param name="id">行 Id。</param>

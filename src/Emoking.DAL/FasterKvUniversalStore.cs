@@ -21,8 +21,8 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
     // 哈希桶数——2^20 支撑到百万级行。
     private const long HashBucketCount = 1L << 20;
 
-    // 内存预算位宽——2^25 字节 = 32MB 常驻内存窗口。
-    private const int MemorySizeBits = 25;
+    // 内存预算位宽——2^27 字节 = 128MB 常驻内存窗口（第 13 轮 30 万行压测容量）。
+    private const int MemorySizeBits = 27;
 
     // 页位宽——1MB 页减少页切换。
     private const int PageSizeBits = 20;
@@ -221,6 +221,55 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
 
         // 返回行。
         return Task.FromResult<UniversalEntity?>(row);
+    }
+
+    /// <summary>
+    /// 指针追逐——FASTER 无二级索引，迭代器全扫描过滤 ParentId。
+    /// </summary>
+    /// <remarks>
+    /// 诚实代价：FASTER 的 ParentId 查询是 O(n) 全扫描（每次迭代整个键空间），
+    /// 与磁盘表的 B+ 树索引不同——压测数据将量化这一差异。
+    /// </remarks>
+    /// <param name="parentId">父节点 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>全部 ParentId 命中的未删除行。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetByParentIdAsync(
+        Guid parentId,
+        CancellationToken cancellationToken = default)
+    {
+        // 打开会话。
+        using var session = NewSession();
+
+        // 结果集。
+        var results = new List<UniversalEntity>();
+
+        // 全量迭代。
+        using (var iterator = session.Iterate())
+        {
+            // 逐条推进。
+            while (iterator.GetNext(out var recordInfo, out var key, out var value))
+            {
+                // 已删除记录跳过。
+                if (recordInfo.Tombstone)
+                {
+                    // 跳过。
+                    continue;
+                }
+
+                // 解包。
+                var row = UniversalEntityCodec.Unpack(value);
+
+                // 匹配 ParentId 且未删除。
+                if (!row.IsDeleted && row.ParentId == parentId)
+                {
+                    // 命中。
+                    results.Add(row);
+                }
+            }
+        }
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(results);
     }
 
     /// <summary>

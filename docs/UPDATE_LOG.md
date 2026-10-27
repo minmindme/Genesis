@@ -1,5 +1,43 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 13 轮：Edge 同构——消灭 Role=3，索引即数据（双向边）+ 100K 混合压测
+
+### 更新内容
+
+1. **Role=3 废弃声明**：边不再是特殊身份——边 = Role=2 普通行（ParentId=from、TypeId=EdgeType 元数据、Value=SNAP1 快照含 `To` 指针与边属性）。`RoleEdge` 常量保留但已无引擎逻辑引用。
+2. **元数据面**：Role=4 指令行 `EdgeType=Follows|From=User|To=User`；`MetaCache.GetEdgeDefinition(edgeTypeId)` 查询边定义。
+3. **双向边（索引即数据）**：`Gateway.CreateEdge(from, edgeTypeId, reverseEdgeTypeId, to, props)` 一次生成 2 行——正向挂 From、反向挂 To，**"谁关注了我"退化为普通 ParentId 查询**，无需外挂反向索引结构。
+4. `Gateway.GetOutgoingEdgesAsync(store, entityId, edgeTypeId)`：指针追逐 + TypeId 过滤 + 快照解析 → `(To, Props)` 列表。
+5. `IUniversalStore` 接口新增 `GetByParentIdAsync`（指针追逐进抽象层）；三引擎 + PolicyDrivenStore（解密过滤）全部实现。
+6. **100K 混合压测**（`EdgeIsomorphismTests`，GENESIS_BENCH_ROWS 可调、抽样遍历控制资源消耗）：10 万快照用户 + 10 万 Follows 双向边（环形 i→i+1，30 万行）。
+
+### 100K 压测数据（30 万行，本机 SQL Server 2019）
+
+| 引擎 | BulkWrite | 点查 ×100 | 正向遍历 avg | 反向遍历 avg | 遍历机制 |
+|---|---|---|---|---|---|
+| InMemory 字典 | **163 ms（184 万行/s）** | 0 ms | 58 ms/q | 61 ms/q | O(n) 内存全扫 |
+| FASTER（LSM） | 659 ms（45.5 万行/s） | 7 ms | 149-160 ms/q | 同左 | **O(n) 全扫描（无二级索引，诚实代价）** |
+| **SqlServer 磁盘表** | 15.1 s（2 万行/s） | **43 ms** | **2 ms/q** | **0 ms/q** | **ParentId B+ 树索引命中** |
+
+**关键洞察——"索引即数据"的辩证结果**：写入侧 InMemory 碾压（184 万行/s）；但遍历侧 **SqlServer 磁盘表的 B+ 树索引反超内存全扫 30 倍**（2ms vs 58ms）——双向边让磁盘引擎的成熟索引体系免费为同构架构所用，而 FASTER 因无二级索引付出全扫描代价。**同构没有消灭索引的必要性，只是把索引的实现责任交还给了物理引擎。**
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B23 | 边属性 "2026-01" 被误解析为 DateTime（2026-01-01） | 第 11 轮 DateTime 回退解析过宽（TryParse 接受不完整日期） | 回退加长度门槛（>=10 字符，即 yyyy-MM-dd 起） |
+| B24 | CS0535 PolicyDrivenStore 未实现新接口成员 | IUniversalStore 新增方法后装饰器漏实现 | 实现并做解密过滤（装饰器不裸透传密文） |
+
+### 未改旁支
+
+边删除级联（双向边两行同步删）、EdgeType 指令热切换、SNAP 行自动转换/迁移工具、SM4 执行器、CQRS 读模型、白皮书 2.0、CLI/代码生成、DirtyGraph、雪花 ID。
+
+### 未验证项
+
+百万级边规模；FASTER 并发会话遍历；双向边删除一致性；PolicyDrivenStore 加密下的边遍历性能（解密开销未计入本轮压测）。
+
+---
+
 ## 2026-10-27 第 12 轮：闭合回路——快照+加密叠加实测与模式切换语义定义
 
 ### 更新内容

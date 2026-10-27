@@ -170,8 +170,10 @@ public sealed class DynamicAssembler
             return dateValue;
         }
 
-        // ISO 8601 回退解析——JsonSerializer 默认输出即此形态，文化无关。
-        if (DateTime.TryParse(
+        // ISO 8601 回退解析——覆盖 JSON 序列化的省略小数秒形态。
+        // 长度门槛（>=10 即 yyyy-MM-dd 起）防止 "2026-01" 这类短字符串被宽松解析误判为日期。
+        if (value.Length >= 10
+            && DateTime.TryParse(
                 value,
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.RoundtripKind,

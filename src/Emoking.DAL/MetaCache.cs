@@ -452,6 +452,29 @@ public sealed class MetaCache
     }
 
     /// <summary>
+    /// 获取边类型定义——Edge 同构的元数据面（Role=4 指令行 `EdgeType=名称|From=类型Id|To=类型Id`）。
+    /// </summary>
+    /// <param name="edgeTypeId">边类型的 TypeId（Role=1 类型行 Id）。</param>
+    /// <returns>边定义键值对（含 EdgeType/From/To）；未注册返回 null。</returns>
+    public IReadOnlyDictionary<string, string>? GetEdgeDefinition(Guid edgeTypeId)
+    {
+        // 遍历全部引擎指令行。
+        foreach (var engine in _engines.Values)
+        {
+            // 指令带 EdgeType 键且 TargetEntityTypeId 指向该边类型时命中。
+            if (engine.Settings.TryGetValue("EdgeType", out _)
+                && engine.TargetEntityTypeId == edgeTypeId)
+            {
+                // 返回完整边定义。
+                return engine.Settings;
+            }
+        }
+
+        // 未注册的边类型。
+        return null;
+    }
+
+    /// <summary>
     /// 解析 Role=5 安全策略行——策略名 → 键值对集合。
     /// </summary>
     /// <param name="rows">Role=5 行集合。</param>

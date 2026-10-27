@@ -70,6 +70,20 @@ public sealed class SqlServerUniversalStore : IUniversalStore
     }
 
     /// <summary>
+    /// 指针追逐——委托给仓储的 ParentId 查询（磁盘表走 ParentId 非聚集索引）。
+    /// </summary>
+    /// <param name="parentId">父节点 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>全部 ParentId 命中的未删除行。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetByParentIdAsync(
+        Guid parentId,
+        CancellationToken cancellationToken = default)
+    {
+        // 委托仓储指针追逐。
+        return _repository.GetByParentIdAsync(parentId, cancellationToken);
+    }
+
+    /// <summary>
     /// 按 Id 软删一行——委托给仓储的 SoftDelete。
     /// </summary>
     /// <param name="id">行 Id。</param>

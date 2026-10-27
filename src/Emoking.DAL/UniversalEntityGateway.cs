@@ -112,6 +112,163 @@ public sealed class UniversalEntityGateway
     }
 
     /// <summary>
+    /// 创建同构双向边——正向行挂 From 实体下、反向行挂 To 实体下，"索引即数据"。
+    /// </summary>
+    /// <remarks>
+    /// Edge 同构（第 13 轮）：边不再是特殊身份（Role=3 废弃），而是 Role=2 普通行——
+    /// 加密、租户隔离、快照模式、多引擎全部自动继承。
+    /// 双向行让"谁关注了我"退化为普通的 ParentId 查询，无需外挂反向索引结构。
+    /// </remarks>
+    /// <param name="fromId">起点实体行 Id。</param>
+    /// <param name="edgeTypeId">正向边类型的 TypeId。</param>
+    /// <param name="reverseEdgeTypeId">反向边类型的 TypeId（如 FollowedBy）。</param>
+    /// <param name="toId">终点实体行 Id。</param>
+    /// <param name="props">边属性（可为 null）。</param>
+    /// <returns>双向边行集合（2 行），可直接 BulkInsert。</returns>
+    public IReadOnlyList<UniversalEntity> CreateEdge(
+        Guid fromId,
+        Guid edgeTypeId,
+        Guid reverseEdgeTypeId,
+        Guid toId,
+        IReadOnlyDictionary<string, object?>? props = null)
+    {
+        // 组装双向载荷——To 指针 + 边属性一起进快照。
+        var forwardPayload = new Dictionary<string, object?>
+        {
+            // 正向边的终点。
+            ["To"] = toId,
+            // 边属性。
+            ["Props"] = props
+        };
+
+        // 反向载荷——To 指回起点。
+        var reversePayload = new Dictionary<string, object?>
+        {
+            // 反向边的终点（即原起点）。
+            ["To"] = fromId,
+            // 边属性同享。
+            ["Props"] = props
+        };
+
+        // 正向行：挂在 From 实体下。
+        var forwardRow = new UniversalEntity(
+            Id: Guid.NewGuid(),
+            TypeId: edgeTypeId,
+            Role: UniversalEntity.RoleData,
+            ParentId: fromId,
+            Value: SnapshotCodec.Prefix + System.Text.Json.JsonSerializer.Serialize(forwardPayload));
+
+        // 反向行：挂在 To 实体下。
+        var reverseRow = new UniversalEntity(
+            Id: Guid.NewGuid(),
+            TypeId: reverseEdgeTypeId,
+            Role: UniversalEntity.RoleData,
+            ParentId: toId,
+            Value: SnapshotCodec.Prefix + System.Text.Json.JsonSerializer.Serialize(reversePayload));
+
+        // 返回双向行。
+        return new[] { forwardRow, reverseRow };
+    }
+
+    /// <summary>
+    /// 取某实体的全部出边——指针追逐 + 边类型过滤 + 快照解析。
+    /// </summary>
+    /// <param name="store">同构池存储。</param>
+    /// <param name="entityId">起点实体行 Id。</param>
+    /// <param name="edgeTypeId">正向边类型 TypeId。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>出边列表：(终点实体 Id, 边属性)。</returns>
+    public async Task<List<(Guid To, IReadOnlyDictionary<string, object?> Props)>> GetOutgoingEdgesAsync(
+        IUniversalStore store,
+        Guid entityId,
+        Guid edgeTypeId,
+        CancellationToken cancellationToken = default)
+    {
+        // 指针追逐——取该实体下全部子行。
+        var children = await store.GetByParentIdAsync(entityId, cancellationToken);
+
+        // 过滤边类型行并解析快照。
+        var edges = new List<(Guid To, IReadOnlyDictionary<string, object?> Props)>();
+
+        // 遍历子行。
+        foreach (var child in children)
+        {
+            // 只处理目标边类型的行。
+            if (child.TypeId != edgeTypeId)
+            {
+                // 跳过非边行（属性行等）。
+                continue;
+            }
+
+            // 跳过空值或非快照载荷。
+            if (child.Value is null || !child.Value.StartsWith(SnapshotCodec.Prefix, StringComparison.Ordinal))
+            {
+                // 跳过。
+                continue;
+            }
+
+            // 解析边快照。
+            using var document = System.Text.Json.JsonDocument.Parse(child.Value[SnapshotCodec.Prefix.Length..]);
+            var root = document.RootElement;
+
+            // 提取 To 指针。
+            var to = root.GetProperty("To").GetGuid();
+
+            // 提取边属性。
+            var props = new Dictionary<string, object?>(StringComparer.Ordinal);
+
+            // Props 存在则逐个推断。
+            if (root.TryGetProperty("Props", out var propsElement) && propsElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                // 逐属性推断。
+                foreach (var prop in propsElement.EnumerateObject())
+                {
+                    // 经动态轨标量推断还原。
+                    props[prop.Name] = SnapshotInferJson(prop.Value);
+                }
+            }
+
+            // 加入出边列表。
+            edges.Add((to, props));
+        }
+
+        // 返回出边。
+        return edges;
+    }
+
+    /// <summary>
+    /// JsonElement → 推断对象——边快照还原的值转换。
+    /// </summary>
+    /// <param name="element">JSON 值。</param>
+    /// <returns>推断后的对象。</returns>
+    private static object? SnapshotInferJson(System.Text.Json.JsonElement element)
+    {
+        // 按值种类分发——与 SnapshotCodec 的动态轨策略一致。
+        return element.ValueKind switch
+        {
+            // 字符串经标量推断。
+            System.Text.Json.JsonValueKind.String => DynamicAssembler.InferValue(element.GetString()),
+
+            // 数字统一数值。
+            System.Text.Json.JsonValueKind.Number => element.TryGetInt64(out var longValue)
+                ? (object)(int)longValue
+                : element.GetDecimal(),
+
+            // 布尔。
+            System.Text.Json.JsonValueKind.True => true,
+
+            // 布尔。
+            System.Text.Json.JsonValueKind.False => false,
+
+            // null。
+            System.Text.Json.JsonValueKind.Null => null,
+
+            // 嵌套结构原样保留。
+            _ => element.GetRawText()
+        };
+    }
+
+    /// <summary>
     /// 统一组装入口——把子图组装为强类型实例、万物容器或快照对象。
     /// </summary>
     /// <param name="rows">子图行集合。</param>

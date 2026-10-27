@@ -228,6 +228,37 @@ public sealed class PolicyDrivenStore : IUniversalStore
     }
 
     /// <summary>
+    /// 指针追逐——从内层取回后逐行解密，不可见行剔除。
+    /// </summary>
+    /// <param name="parentId">父节点 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>本租户可见的明文子行集合。</returns>
+    public async Task<IReadOnlyList<UniversalEntity>> GetByParentIdAsync(
+        Guid parentId,
+        CancellationToken cancellationToken = default)
+    {
+        // 从内层取原始子行。
+        var rows = await _inner.GetByParentIdAsync(parentId, cancellationToken);
+
+        // 逐行还原。
+        var visible = new List<UniversalEntity>(rows.Count);
+
+        // 遍历。
+        foreach (var row in rows)
+        {
+            // 尝试还原——成功才可见。
+            if (TryRestoreValue(row.Value, out var plain))
+            {
+                // 加入可见集。
+                visible.Add(row with { Value = plain });
+            }
+        }
+
+        // 返回可见子行。
+        return visible;
+    }
+
+    /// <summary>
     /// 按 Id 软删——元数据操作，直接委托内层。
     /// </summary>
     /// <param name="id">行 Id。</param>

@@ -52,6 +52,20 @@ public interface IUniversalStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 指针追逐——取全部 ParentId 命中的未删除行。
+    /// </summary>
+    /// <remarks>
+    /// Edge 同构（第 13 轮）后的核心读路径：正向边挂在 From 实体下、反向边挂在 To 实体下，
+    /// 双向遍历都退化为"按 ParentId 取子行"这一种普通查询。
+    /// </remarks>
+    /// <param name="parentId">父节点 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>全部 ParentId 命中的未删除行。</returns>
+    Task<IReadOnlyList<UniversalEntity>> GetByParentIdAsync(
+        Guid parentId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 按 Id 软删一行（IsDeleted = 1）。
     /// </summary>
     /// <param name="id">行 Id。</param>
