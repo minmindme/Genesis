@@ -11,8 +11,26 @@ namespace Emoking.DAL.Tests;
 /// 策略驱动安全验收——安全规则全部来自池中 Role=5 数据：
 /// 密文落库、透明解密、租户隔离、限流、以及"改一行策略数据 = 换安全策略"的热切换。
 /// </summary>
-public sealed class SecurityPolicyTests
+public sealed class SecurityPolicyTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // User 实体类型的 Meta TypeId——与创世行一致。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
 

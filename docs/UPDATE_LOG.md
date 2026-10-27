@@ -1,5 +1,52 @@
 # Genesis 更新日志
 
+## 2026-10-28 第 21 轮：方案 A——图模式 UpdateData（级联 Diff）+ 测试基建解放（每类独立库）
+
+### 更新内容（方案 A 两大战役）
+
+**战役一：图模式实体的状态机变更（`UpdateData` 网关动作）**
+- `UniversalActionBus` 内置 `UpdateData`（参数 EntityId + Data JSON，与 InsertData 同形态）：
+  - **快照轨**：新载荷拆解 1 行 → 对齐 Id/Version → `UpsertAsync`（CAS + 历史行，第 20 轮成果直通）；
+  - **图模式轨**（含强类型图与动态图）：三步级联 Diff——① 主实体 CAS Upsert（Version 校验失败 = 零残留）→ ② 旧属性行 `DeleteMany`（单事务软删，旧值经软删行可审计）→ ③ 新属性行重挂 ParentId 后 `BulkInsert`；
+  - 诚实边界：三步为跨 store 调用编排而非单事务（② ③ 失败概率极低），完整原子性列 store 层后续演进。
+- 测试（真库 SqlServerUniversalStore，ActionBusTests +2）：
+  - 图模式：Alice{18} → Update → Alice-2{20}——Id 不变、Version 1→2、旧 Age 行软删不可见、新属性行在位、主实体历史行留痕；
+  - 快照模式：SNAP1 整覆盖——Version 1→2、零写放大、历史行留痕。
+
+**战役二：测试基建解放（消灭共享 GenesisIso）**
+- `TestDatabase`（新增）：每测试类 `CREATE DATABASE [GenesisTest_<类名>_<短Id>]` + 建表（与 UniversalEntity.sql 同构的精简 DDL）+ 类结束 `DROP`（SET SINGLE_USER 强断防残留）；
+- `EmokingDbContext.ConnectionStringOverrideResolver`（静态委托注入点，生产恒 null）：测试内所有 `new EmokingDbContext()` 自动路由到当前类的独立库——**测试代码零连接串改动**；
+- `TestRunner` 支持 `IAsyncLifetime`（类级 Initialize/Dispose）；初始化失败计为该类跳过（`[INIT FAIL]`），不再崩整个 runner；
+- 隔离双层：**类间**独立库（字母序依赖解除）+ **方法间**类内 TRUNCATE（保留——独立库上幂等）；
+- 测试类改造：15 个类挂 IAsyncLifetime；门禁基准类（BenchmarkTests/InProcessKvBenchmarkTests）暂不改造（GENESIS_BENCH=1 时仍走共享库，诚实边界）；
+- `ZCiphertextDemoTests` 留痕库独立化：留痕库专属本类、Dispose 不删（演示定位），运行时输出留痕库名供 sqlcmd 验证。
+
+### 排障实录（本轮三个真实 BUG）
+
+| BUG | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| B35 | 建表失败 Error 1902（每表只能一个聚集索引） | 测试 DDL 的 PRIMARY KEY 默认聚集，与 (TypeId,Role,IsDeleted) 聚集索引冲突 | 主键声明 `PRIMARY KEY NONCLUSTERED`（与正式 DDL 对齐） |
+| B36 | Runner 崩溃 exit 0xE0434352 | InitializeAsync 在 try 外，建库异常直接冒出 Main | 初始化包 try/catch：`[INIT FAIL]` + 尽力清理 + 跳过该类 |
+| B37 | 方法间主键冲突 2627（同类两测试用同元数据 Id） | 类级独立库替代了原 TRUNCATE 的方法级隔离；新测试漏加清池 | 统一"类级建库 + 方法级 TRUNCATE"双层隔离；UpdateData 测试改真库总线时补齐 |
+
+### 验收
+
+- `dotnet build`：0 警告 0 错误。
+- 全量回归：**64 通过 / 0 失败 / 5 跳过（基准门禁）**（+2 UpdateData 真库测试）。
+- 排障后逐项复跑确认：B35/B36/B37 全部闭合。
+
+### 诚实边界
+
+- **并行性未落地**：TestHost 在本机沙箱崩溃（历史问题），本机仍用 TestRunner 顺序执行；独立库隔离已就绪，`dotnet test` 并行需 CI 环境验证（TestHost 可用 + per-class fixture 注入替代 static 连接串）。
+- 门禁基准类未改造（启用 GENESIS_BENCH=1 时仍走共享 GenesisIso）。
+- UpdateData 三步编排非单事务（见上）；快照 JSON 中文以 \uXXXX 转义存储（断言用 ASCII 载荷，序列化转义行为记录在案）。
+
+### 未改旁支
+
+DSL 转义（第三座山）、LLM 意图接入（方案 B）、白皮书 3.0（方案 C）、入边级联清理、GitHub 推送（本地领先 5 提交，仍缺 remote 地址）、SM4、雪花 ID。
+
+---
+
 ## 2026-10-27 第 20 轮：洞 2 重做——Version CAS + 历史行（"能覆盖"升级为"能安全覆盖"）
 
 ### 方向校准（接受第 19 轮外部评审）

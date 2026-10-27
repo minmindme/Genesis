@@ -10,17 +10,36 @@ namespace Emoking.DAL.Tests;
 /// <summary>
 /// 意图总线验收——一个入口双路由：Role=7 工作流命令 + 内置业务动作（InsertData/GetData）。
 /// </summary>
-public sealed class ActionBusTests
+public sealed class ActionBusTests : IAsyncLifetime
 {
     // 演示命令行的固定 Id。
     private static readonly Guid CreateEntityCommandRowId = new("00000000-0000-0000-0000-000000000920");
 
     /// <summary>
-    /// 清空磁盘表——从空池开始。
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建，替代共享库 + TRUNCATE）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
+
+    /// <summary>
+    /// 方法级清池——TRUNCATE 本类独立库的全表（第 21 轮起库名为类专属，但同类内多测试方法
+    /// 共享该库，方法级 TRUNCATE 保留以维持方法间隔离；在独立库上执行是安全的）。
     /// </summary>
     private static async Task TruncateTableAsync()
     {
-        // 打开默认连接。
+        // 打开当前测试库连接（经连接串覆盖解析点路由）。
         using var connection = new EmokingDbContext().CreateConnection();
 
         // 构造清空命令。
@@ -243,13 +262,175 @@ public sealed class ActionBusTests
     }
 
     /// <summary>
+    /// 第 21 轮：UpdateData 图模式级联 Diff——主实体 CAS 递增、旧属性行软删、新属性行在位、历史行留痕。
+    /// 全程跑在 SqlServerUniversalStore 真库上（更新语义的真验收）。
+    /// </summary>
+    [Fact]
+    public async Task Bus_UpdateData_GraphMode_CascadesPropertyDiff()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型（Name/Age 两个属性）。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555502"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Age:Int")
+        });
+
+        // 第 2 步：真库存储构造总线——UpdateData 的验收场景必须落在 SQL（历史行/软删行可查）。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：插入 Alice（Age 18）。
+        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 初始载荷。
+            ["Data"] = "{\"Name\":\"Alice\",\"Age\":18}"
+        }));
+
+        // 第 4 步：UpdateData——Name 改值、Age 18 → 20。
+        var updatedId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // 新载荷。
+            ["Data"] = "{\"Name\":\"Alice-2\",\"Age\":20}"
+        }));
+
+        // Id 不变（更新不是重插）。
+        Assert.Equal(aliceId, updatedId);
+
+        // 第 5 步：GetData 读回——新值生效、旧值消失（含 Id/TypeName 自描述键）。
+        var resultJson = System.Text.Json.JsonSerializer.Serialize(
+            await bus.ExecuteActionAsync("GetData", new Dictionary<string, string> { ["EntityId"] = aliceId.ToString() }),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                // 中文原样输出。
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+        Assert.Contains("Alice-2", resultJson);
+        Assert.Contains("\"Age\":20", resultJson);
+        Assert.DoesNotContain("Alice\"", resultJson);
+        Assert.DoesNotContain("\"Age\":18", resultJson);
+
+        // 第 6 步：主实体 CAS 生效——Version 递增到 2（真库断言）。
+        var updatedRow = await repository.GetByIdAsync(aliceId);
+        Assert.NotNull(updatedRow);
+        Assert.Equal(2, updatedRow!.Version);
+
+        // 第 7 步：属性行 Diff——指针追逐只见 2 个新属性行（旧行已软删不可见）。
+        var children = await repository.GetByParentIdAsync(aliceId);
+        Assert.Equal(2, children.Count);
+        Assert.Contains(children, row => row.Value == "Alice-2");
+        Assert.Contains(children, row => row.Value == "20");
+
+        // 第 8 步：主实体旧行已落成历史行（Role=6，system as history）。
+        var history = await repository.GetByTypeIdAndRoleAsync(studentTypeId, UniversalEntity.RoleHistory);
+        var historyRow = Assert.Single(history);
+        Assert.Equal(aliceId, historyRow.ParentId);
+    }
+
+    /// <summary>
+    /// 第 21 轮：UpdateData 快照轨直通 CAS——单行覆盖、Version 递增、零写放大（真库验收）。
+    /// </summary>
+    [Fact]
+    public async Task Bus_UpdateData_SnapshotMode_IncrementsVersion()
+    {
+        // 第 1 步：清池 + 言出 BusProduct 快照类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var productTypeId = new Guid("33333333-3333-3333-3333-333333333333");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: productTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "BusProduct"),
+            new UniversalEntity(
+                Id: new Guid("00000000-0000-0000-0000-000000000930"),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleEngine,
+                ParentId: null,
+                Value: $"StorageMode=Snapshot|TargetTypeId={productTypeId}")
+        });
+
+        // 第 2 步：真库存储构造总线。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：插入商品。
+        var entityId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "BusProduct",
+            // 初始载荷。
+            ["Data"] = "{\"Title\":\"旧标题\",\"Price\":10}"
+        }));
+
+        // 第 4 步：UpdateData——整快照覆盖。
+        var updatedId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = entityId.ToString(),
+            // 新载荷。
+            ["Data"] = "{\"Title\":\"新标题\",\"Price\":99.5}"
+        }));
+
+        // Id 不变。
+        Assert.Equal(entityId, updatedId);
+
+        // 第 5 步：读回——新值生效、Version 递增、SNAP1 形态（真库断言）。
+        // 注意：快照 JSON 默认 Unicode 转义，中文标题以 \uXXXX 形态存储——断言用 ASCII 数字载荷。
+        var updatedRow = await repository.GetByIdAsync(entityId);
+        Assert.NotNull(updatedRow);
+        Assert.Equal(2, updatedRow!.Version);
+        Assert.StartsWith("SNAP1:", updatedRow.Value);
+        Assert.Contains("99.5", updatedRow.Value);
+        Assert.DoesNotContain("\"Price\":10", updatedRow.Value);
+
+        // 第 6 步：历史行留痕（主实体旧行）。
+        var history = await repository.GetByTypeIdAndRoleAsync(productTypeId, UniversalEntity.RoleHistory);
+        Assert.Single(history);
+    }
+
+    /// <summary>
     /// 无法识别的动作显式失败——总线不猜意图。
     /// </summary>
     [Fact]
     public async Task Bus_UnknownAction_Throws()
     {
-        // 清池 + 总线。
-        await TruncateTableAsync();
+        // 构造总线（独立测试库由 InitializeAsync 创建）。
         var bus = await BuildBusAsync(withCommand: false);
 
         // 未知动作抛错。

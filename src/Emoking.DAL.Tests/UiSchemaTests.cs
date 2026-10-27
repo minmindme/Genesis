@@ -10,17 +10,35 @@ namespace Emoking.DAL.Tests;
 /// <summary>
 /// UI 同构验收——Role=8 一行数据即前端界面描述，通用渲染器据此动态生成表单。
 /// </summary>
-public sealed class UiSchemaTests
+public sealed class UiSchemaTests : IAsyncLifetime
 {
     // Product 实体类型 TypeId——与 UI Schema 指向一致。
     private static readonly Guid ProductTypeId = new("77777777-7777-7777-7777-777777777777");
 
     /// <summary>
-    /// 清空磁盘表——从空池开始。
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建，替代共享库 + TRUNCATE）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
+
+    /// <summary>
+    /// 方法级清池——TRUNCATE 本类独立库的全表（同类内多测试方法共享该库，保留方法间隔离）。
     /// </summary>
     private static async Task TruncateTableAsync()
     {
-        // 打开默认连接。
+        // 打开当前测试库连接（经连接串覆盖解析点路由）。
         using var connection = new EmokingDbContext().CreateConnection();
 
         // 构造清空命令。
@@ -163,7 +181,7 @@ public sealed class UiSchemaTests
     [Fact]
     public async Task Bus_GetSystemSchema_WithNoUi_ReturnsEmptyUis()
     {
-        // 清池 + 总线（不插 Role=8）。
+        // 清池 + 构造总线（不插 Role=8）。
         await TruncateTableAsync();
         var bus = await BuildBusAsync(includeUi: false);
 

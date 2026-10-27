@@ -11,8 +11,26 @@ namespace Emoking.DAL.Tests;
 /// 闭合回路验收——补齐第 11 轮承认但未解决的三处隐患：
 /// 快照+加密叠加实测、StorageMode 切换双向语义、快照 schema 边界确认。
 /// </summary>
-public sealed class SnapshotClosureTests
+public sealed class SnapshotClosureTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // Order 实体类型 TypeId——快照模式演示类型。
     private static readonly Guid OrderTypeId = new("33333333-3333-3333-3333-333333333333");
 

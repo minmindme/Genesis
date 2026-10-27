@@ -16,8 +16,26 @@ namespace Emoking.DAL.Tests;
 /// 连接串由 EmokingDbContext 默认解析（环境变量优先，回退本地 GenesisIso）。
 /// 每个测试开始前 TRUNCATE 全表，保证可重复运行。
 /// </remarks>
-public sealed class DatabaseRoundTripTests
+public sealed class DatabaseRoundTripTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // User 实体的 Meta TypeId——与 MetaCache 硬编码保持一致。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
 

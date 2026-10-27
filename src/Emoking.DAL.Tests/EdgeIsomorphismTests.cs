@@ -12,8 +12,26 @@ namespace Emoking.DAL.Tests;
 /// Edge 同构验收——边是 Role=2 普通行（Role=3 废弃），双向边让反向索引数据化，
 /// 正反向遍历都退化为普通的 ParentId 查询。
 /// </summary>
-public sealed class EdgeIsomorphismTests
+public sealed class EdgeIsomorphismTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // User 实体类型 TypeId——快照模式压测载体。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
 

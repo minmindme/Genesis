@@ -18,6 +18,15 @@ public sealed class EmokingDbContext
     // 连接串环境变量名——部署环境通过它注入真实连接串，代码内不含生产凭据。
     public const string ConnectionStringEnvVar = "GENESIS_SQL_CONN";
 
+    /// <summary>
+    /// 连接串解析覆盖点（第 21 轮测试基建）——非 null 时其返回值优先于环境变量与默认回退。
+    /// </summary>
+    /// <remarks>
+    /// 用途：测试框架把 EmokingDbContext 全部路由到每测试类独立数据库（TestDatabase），
+    /// 生产环境保持 null 即可——不设置时解析行为与历史完全一致。
+    /// </remarks>
+    public static Func<string?>? ConnectionStringOverrideResolver;
+
     // 连接字符串，由 <see cref="ResolveDefaultConnectionString"/> 在构造时解析。
     private readonly string _connectionString;
 
@@ -64,6 +73,16 @@ public sealed class EmokingDbContext
     /// <returns>完整的 SQL Server 连接串。</returns>
     private static string ResolveDefaultConnectionString()
     {
+        // 第 0 优先级：覆盖解析点——测试框架注入的独立库连接串（生产环境恒为 null）。
+        var overrideValue = ConnectionStringOverrideResolver?.Invoke();
+
+        // 覆盖值非空白时直接采用。
+        if (!string.IsNullOrWhiteSpace(overrideValue))
+        {
+            // 返回覆盖连接串。
+            return overrideValue;
+        }
+
         // 先读环境变量——部署环境用此入口注入真实连接串，代码内不落生产凭据。
         var fromEnv = Environment.GetEnvironmentVariable(ConnectionStringEnvVar);
 

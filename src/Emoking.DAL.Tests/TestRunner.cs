@@ -51,8 +51,45 @@ public static class TestRunner
             // 实例化测试类。
             var instance = Activator.CreateInstance(type);
 
-            foreach (var method in methods)
+            // 类级生命周期钩子（第 21 轮测试基建）——IAsyncLifetime.InitializeAsync 在全部方法前执行一次
+            // （独立测试库创建等）；全部方法结束后 DisposeAsync 清理。cast 一次共享给 finally。
+            var lifetimeInstance = instance as IAsyncLifetime;
+
+            // 有生命周期钩子才初始化（建库）——失败计为该类整体跳过，不崩整个 runner。
+            if (lifetimeInstance is not null)
             {
+                // 初始化——失败时清理半初始化资源并跳过该类。
+                try
+                {
+                    // 初始化。
+                    await lifetimeInstance.InitializeAsync();
+                }
+                catch (Exception initEx)
+                {
+                    // 输出初始化失败原因。
+                    Console.WriteLine($"  [INIT FAIL] {type.Name} - {initEx.Message}");
+
+                    // 尽力清理（DROP 半建的库）。
+                    try
+                    {
+                        // 清理。
+                        await lifetimeInstance.DisposeAsync();
+                    }
+                    catch
+                    {
+                        // 清理失败忽略——继续下一类。
+                    }
+
+                    // 跳过该类全部测试。
+                    continue;
+                }
+            }
+
+            try
+            {
+                // 逐方法执行。
+                foreach (var method in methods)
+                {
                 // 读取 Fact 特性——Skip 文案约定 "BENCH:" 前缀的测试为环境门禁基准。
                 var fact = method.GetCustomAttribute<FactAttribute>();
 
@@ -104,6 +141,16 @@ public static class TestRunner
                     // 输出完整异常（含堆栈）——便于定位失败根因。
                     Console.WriteLine($"✗ FAIL - {actual}");
                     failed++;
+                }
+                }
+            }
+            finally
+            {
+                // 类级清理（第 21 轮）——独立测试库 DROP；异常路径同样清理。
+                if (lifetimeInstance is not null)
+                {
+                    // 清理。
+                    await lifetimeInstance.DisposeAsync();
                 }
             }
         }

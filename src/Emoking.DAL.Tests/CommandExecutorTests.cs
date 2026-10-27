@@ -12,8 +12,26 @@ namespace Emoking.DAL.Tests;
 /// 同构 CLI 验收——Role=7 命令行落库后，执行器按 Steps 编排完成
 /// "言出类型 → 模式指令 → 代理生成 → 热重载"全工作流。
 /// </summary>
-public sealed class CommandExecutorTests
+public sealed class CommandExecutorTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // 演示命令行的固定 Id。
     private static readonly Guid CreateEntityCommandRowId = new("00000000-0000-0000-0000-000000000920");
 

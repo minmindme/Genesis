@@ -12,17 +12,35 @@ namespace Emoking.DAL.Tests;
 /// 洞 2 重做验收（第 20 轮）——"U 不是能覆盖，是在并发下可证明地覆盖，并且留下可审计的过去"。
 /// 三条测试全部跑在 SqlServerUniversalStore 真库上（评审指认：真库才是洞 2 的真验收）。
 /// </summary>
-public sealed class UpsertTests
+public sealed class UpsertTests : IAsyncLifetime
 {
     // 测试实体类型 TypeId——快照单行文档，避免依赖网关拆解。
     private static readonly Guid DocTypeId = new("88888888-8888-8888-8888-888888888888");
 
     /// <summary>
-    /// 清空磁盘表——从空池开始。
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建，替代共享库 + TRUNCATE）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
+
+    /// <summary>
+    /// 方法级清池——TRUNCATE 本类独立库的全表（同类内多测试方法共享该库，保留方法间隔离）。
     /// </summary>
     private static async Task TruncateTableAsync()
     {
-        // 打开默认连接。
+        // 打开当前测试库连接（经连接串覆盖解析点路由）。
         using var connection = new EmokingDbContext().CreateConnection();
 
         // 构造清空命令。

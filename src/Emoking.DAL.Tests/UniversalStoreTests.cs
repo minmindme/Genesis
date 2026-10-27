@@ -10,8 +10,26 @@ namespace Emoking.DAL.Tests;
 /// <summary>
 /// 存储抽象测试——验证三种 Provider 经同一接口的行为一致性，以及工厂按池中指令动态落位引擎。
 /// </summary>
-public sealed class UniversalStoreTests
+public sealed class UniversalStoreTests : IAsyncLifetime
 {
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// 类内保留的 TruncateTableAsync 在独立空库上是幂等空操作（历史注释语义不变）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
     // User 实体类型的 Meta TypeId——与库中创世行一致。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
 

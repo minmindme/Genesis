@@ -29,6 +29,9 @@ public sealed class UniversalActionBus
     // 内置业务动作：级联软删实体行及其全部子行（属性、出边）。
     public const string DeleteDataAction = "DeleteData";
 
+    // 内置业务动作：更新业务数据（快照轨 CAS 覆盖 / 图模式级联 Diff）。
+    public const string UpdateDataAction = "UpdateData";
+
     // 内置业务动作：创建同构双向边（按边类型名查正反向 TypeId）。
     public const string InsertEdgeAction = "InsertEdge";
 
@@ -110,12 +113,15 @@ public sealed class UniversalActionBus
             // 级联软删。
             DeleteDataAction => await DeleteDataAsync(args),
 
+            // 更新业务数据。
+            UpdateDataAction => await UpdateDataAsync(args),
+
             // 创建双向边。
             InsertEdgeAction => await InsertEdgeAsync(args),
 
             // 无法识别的动作。
             _ => throw new InvalidOperationException(
-                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}/{InsertEdgeAction}）。")
+                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}/{UpdateDataAction}/{InsertEdgeAction}）。")
         };
     }
 
@@ -223,6 +229,107 @@ public sealed class UniversalActionBus
 
         // 返回删除行数。
         return deleted;
+    }
+
+    /// <summary>
+    /// 更新业务数据——快照轨直通 CAS 覆盖；图模式级联 Diff（主实体 Upsert + 旧属性行批量软删 + 新属性行插入）。
+    /// </summary>
+    /// <remarks>
+    /// 第 21 轮（方案 A 战役一）：补齐图模式实体的"状态机变更"短板。
+    /// 快照轨：新载荷拆解为 1 行 → 对齐 Id/Version → UpsertAsync（历史行由存储层自动产生）。
+    /// 图模式轨（含强类型图与动态图——Decompose 自动分）：三步编排——
+    ///   1. 主实体 CAS Upsert（Version 校验失败 = 零残留，旧属性行仍完整）；
+    ///   2. 旧属性行 DeleteMany（单事务软删——变更历史经软删行可审计）；
+    ///   3. 新属性行重挂 ParentId 到真实实体行 Id 后 BulkInsert。
+    /// 诚实边界：三步是跨 store 调用的编排而非单事务——第 2/3 步失败会留下中间态
+    /// （概率极低：软删与插入几乎不会失败），完整原子性列为 store 层后续演进。
+    /// </remarks>
+    /// <param name="args">参数：EntityId、Data（JSON 载荷，与 InsertData 同形态）。</param>
+    /// <returns>实体行 Id。</returns>
+    private async Task<object> UpdateDataAsync(IReadOnlyDictionary<string, string> args)
+    {
+        // 取实体行 Id。
+        var entityIdText = RequireArg(args, "EntityId");
+
+        // 解析 Guid。
+        if (!Guid.TryParse(entityIdText, out var entityId))
+        {
+            // 抛出格式异常。
+            throw new InvalidOperationException($"EntityId '{entityIdText}' 不是合法的 Guid。");
+        }
+
+        // 取数据载荷。
+        var dataJson = RequireArg(args, "Data");
+
+        // 实例级定位——实体行必须存在。
+        var entityRow = await _store.GetByIdAsync(entityId);
+
+        // 行不存在。
+        if (entityRow is null)
+        {
+            // 抛出异常。
+            throw new InvalidOperationException($"实体行 {entityId} 不存在或不可见。");
+        }
+
+        // 解析 JSON 载荷。
+        var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(dataJson);
+
+        // 载荷非法时失败。
+        if (payload is null)
+        {
+            // 抛出异常。
+            throw new InvalidOperationException("Data 载荷不是合法的 JSON 对象。");
+        }
+
+        // 按当前类型拆解新子图（快照/强类型图/动态图由网关自动分轨）。
+        var decomposed = _gateway.Decompose(payload, entityRow.TypeId);
+
+        // 快照轨：单行直通 CAS 覆盖——历史可审计，零写放大。
+        if (string.Equals(_metaCache.GetStorageMode(entityRow.TypeId), "Snapshot", StringComparison.Ordinal))
+        {
+            // 对齐真实 Id 与当前 Version——乐观锁更新。
+            var snapshotRow = decomposed[0] with { Id = entityId, Version = entityRow.Version };
+
+            // CAS 覆盖。
+            var upsertedSnapshot = (await _store.UpsertAsync(new[] { snapshotRow })).Single();
+
+            // 返回实体行 Id。
+            return upsertedSnapshot.Id;
+        }
+
+        // ===== 图模式轨：三步级联 Diff =====
+
+        // 第 1 步：主实体 CAS Upsert——对齐真实 Id 与当前 Version。
+        var newEntityRow = decomposed[0] with { Id = entityId, Version = entityRow.Version };
+
+        // CAS 覆盖主实体。
+        var upsertedEntity = (await _store.UpsertAsync(new[] { newEntityRow })).Single();
+
+        // 第 2 步：旧属性行批量软删（单事务）——旧值经软删行可审计。
+        var oldChildren = await _store.GetByParentIdAsync(entityId);
+
+        // 有旧子行才删。
+        if (oldChildren.Count > 0)
+        {
+            // 单事务批量软删。
+            await _store.DeleteManyAsync(oldChildren.Select(row => row.Id).ToList());
+        }
+
+        // 第 3 步：新属性行重挂 ParentId 后插入——Decompose 生成的 ParentId 指向拆解时的临时实体行 Id。
+        var newPropertyRows = decomposed
+            .Skip(1)
+            .Select(row => row with { ParentId = entityId })
+            .ToList();
+
+        // 有新子行才插。
+        if (newPropertyRows.Count > 0)
+        {
+            // 批量插入新属性行。
+            await _store.BulkInsertAsync(newPropertyRows);
+        }
+
+        // 返回实体行 Id。
+        return upsertedEntity.Id;
     }
 
     /// <summary>

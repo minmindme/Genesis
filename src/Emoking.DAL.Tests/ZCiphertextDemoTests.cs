@@ -12,14 +12,38 @@ namespace Emoking.DAL.Tests;
 /// 落库的 AGC1 密文行**刻意不清理**，供测试结束后用 sqlcmd 亲眼验证。
 /// </summary>
 /// <remarks>
-/// 验证命令：
+/// 第 21 轮起本类跑在**独立测试库**中——留痕库名由类名生成（见 InitializeAsync 输出）。
+/// 验证命令（库名以运行时输出为准）：
 ///   SELECT LEFT(Value, 44) FROM dbo.UniversalEntity WHERE Value LIKE 'AGC1:%'
 /// 预期：25 行密文，明文标记物（姓名/邮箱）在库中 0 泄露。
 /// </remarks>
-public sealed class ZCiphertextDemoTests
+public sealed class ZCiphertextDemoTests : IAsyncLifetime
 {
     // User 实体类型的 Meta TypeId——与创世行一致。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
+
+    /// <summary>
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——留痕库即本类专属库。
+        await TestDatabase.CreateAsync(GetType().Name);
+
+        // 输出留痕库名——sqlcmd 人工验密时定位用（独立库落地后库名不再固定）。
+        Console.WriteLine($">>> 留痕库：{TestDatabase.CurrentConnectionString}");
+    }
+
+    /// <summary>
+    /// 类级清理——**不删库**：本类是密文留痕演示，独立库保留供 sqlcmd 人工验证；
+    /// 残留测试库可随时用 DROP 清理（库名 GenesisTest_ZCiphertextDemoTests_*）。
+    /// </summary>
+    public Task DisposeAsync()
+    {
+        // 跳过 DropAsync——刻意留痕（与本类"落库后不清理"的演示定位一致）。
+        Console.WriteLine(">>> 留痕库未删除（演示定位）；清理：DROP DATABASE [GenesisTest_ZCiphertextDemoTests_*]");
+        return Task.CompletedTask;
+    }
 
     /// <summary>
     /// 留痕演示：策略驱动存储落库 25 行密文后不清理——sqlcmd 视角全是 AGC1 乱码。
@@ -27,16 +51,7 @@ public sealed class ZCiphertextDemoTests
     [Fact]
     public async Task Leave_Ciphertext_In_Database_ForManualInspection()
     {
-        // 第 1 步：清池 + 自举播种。
-        using (var connection = new EmokingDbContext().CreateConnection())
-        {
-            // 清空命令。
-            await using var command = connection.CreateCommand();
-            command.CommandText = "TRUNCATE TABLE [dbo].[UniversalEntity]";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        // 自举。
+        // 第 1 步：自举播种（独立测试库由 InitializeAsync 创建，空库起步）。
         var cache = new MetaCache(new UniversalEntityRepository(new EmokingDbContext()));
         await cache.LoadAsync();
 

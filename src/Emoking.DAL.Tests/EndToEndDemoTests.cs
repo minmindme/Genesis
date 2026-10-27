@@ -11,7 +11,7 @@ namespace Emoking.DAL.Tests;
 /// 端到端业务演示——订单（快照模式，"直接煮熟"）与支付流水（图模式，拆解挂载）
 /// 在同一个同构池内共存、各自走最优路径、可联合查询。
 /// </summary>
-public sealed class EndToEndDemoTests
+public sealed class EndToEndDemoTests : IAsyncLifetime
 {
     // Order 实体类型 TypeId——快照模式。
     private static readonly Guid OrderTypeId = new("33333333-3333-3333-3333-333333333333");
@@ -24,11 +24,29 @@ public sealed class EndToEndDemoTests
     private static readonly Guid MetaEngineTypeId = new("00000000-0000-0000-0000-000000000002");
 
     /// <summary>
-    /// 清空磁盘表——从空池开始。
+    /// 类级初始化——为本测试类创建独立数据库（第 21 轮测试基建，替代共享库 + TRUNCATE）。
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        // 建独立库并注册连接串——类内所有 new EmokingDbContext() 自动路由到这里。
+        await TestDatabase.CreateAsync(GetType().Name);
+    }
+
+    /// <summary>
+    /// 类级清理——删除本测试类的独立数据库。
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        // 删库。
+        await TestDatabase.DropAsync();
+    }
+
+    /// <summary>
+    /// 方法级清池——TRUNCATE 本类独立库的全表（与其他测试类模式统一）。
     /// </summary>
     private static async Task TruncateTableAsync()
     {
-        // 打开默认连接。
+        // 打开当前测试库连接（经连接串覆盖解析点路由）。
         using var connection = new EmokingDbContext().CreateConnection();
 
         // 构造清空命令。
