@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Emoking.DAL.Tests/Emoking.DAL.Tests.csproj" />
+    <Project Path="src/Emoking.DAL/Emoking.DAL.csproj" />
+  </Folder>
+</Solution>

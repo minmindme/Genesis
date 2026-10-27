@@ -1,0 +1,24 @@
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Test / coverage
+TestResults/
+*.coverage
+coveragereport/
+
+# Local secrets & temp
+*.log
+*.tmp
+genesis_faster_logs/
+genesis_store_test_*/
