@@ -107,12 +107,79 @@ public sealed class DynamicAssembler
                 && row.TypeId == pair.Value
                 && row.Role == UniversalEntity.RoleData);
 
-            // 值行按值推断类型后挂载——缺行时属性值为 null（元数据声明了但实例没写）。
-            instance.SetProperty(pair.Key, InferValue(valueRow?.Value));
+            // 值行按 DataType 精确还原（第 17 轮：消灭类型推断）——未声明 DataType 时回退到按值推断。
+            instance.SetProperty(pair.Key, InferTyped(valueRow?.Value, metaType, pair.Key));
         }
 
         // 返回万物容器。
         return instance;
+    }
+
+    /// <summary>
+    /// 按 DataType 精确还原——元数据声明了类型（第 17 轮 "Name:Type" 格式）时按声明解析，
+    /// 未声明时回退到按值推断。
+    /// </summary>
+    /// <param name="value">数据库存的字符串值。</param>
+    /// <param name="metaType">实体元数据。</param>
+    /// <param name="propertyName">属性名。</param>
+    /// <returns>还原后的对象。</returns>
+    private static object? InferTyped(string? value, MetaType metaType, string propertyName)
+    {
+        // null 直通。
+        if (value is null)
+        {
+            // 返回 null。
+            return null;
+        }
+
+        // 查元数据声明的 DataType——未声明回退推断。
+        if (!metaType.PropertyDataTypes.TryGetValue(propertyName, out var dataType))
+        {
+            // 回退。
+            return InferValue(value);
+        }
+
+        // 按声明类型解析——解析失败回退推断（容错：避免脏数据直接炸组装）。
+        try
+        {
+            // 分类型解析。
+            return dataType.ToLowerInvariant() switch
+            {
+                // 字符串。
+                "string" => value,
+
+                // 整数。
+                "int" => int.Parse(value, CultureInfo.InvariantCulture),
+
+                // 长整数。
+                "long" => long.Parse(value, CultureInfo.InvariantCulture),
+
+                // 小数。
+                "decimal" => decimal.Parse(value, CultureInfo.InvariantCulture),
+
+                // 布尔。
+                "bool" => bool.Parse(value),
+
+                // 时间——ISO 形态。
+                "datetime" => DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+
+                // Guid。
+                "guid" => Guid.Parse(value),
+
+                // 未知类型回退推断。
+                _ => InferValue(value)
+            };
+        }
+        catch (FormatException)
+        {
+            // 脏数据回退推断，仍失败则保留原字符串。
+            return InferValue(value);
+        }
+        catch (OverflowException)
+        {
+            // 溢出回退推断。
+            return InferValue(value);
+        }
     }
 
     /// <summary>

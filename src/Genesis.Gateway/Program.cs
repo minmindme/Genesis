@@ -43,6 +43,10 @@ var commandExecutor = new UniversalCommandExecutor(repository, cache, outputDire
 // 意图总线——唯一动作入口。
 var actionBus = new UniversalActionBus(cache, gateway, store, commandExecutor);
 
+// 自愈冷却状态——距上次热重载不足 5 秒时拒绝再次重载（防刷）。
+var lastHealAt = DateTime.MinValue;
+var healCooldown = TimeSpan.FromSeconds(5);
+
 // 唯一的 HTTP 入口——整个"后端"就这一个端点。
 app.MapPost("/api/genesis", async (GatewayRequest request) =>
 {
@@ -53,7 +57,19 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
         return Results.BadRequest(new { error = "action 不能为空。" });
     }
 
-    // 交给意图总线——遇"未注册"类错误时自愈：热重载池中数据后重试一次（池是活的，网关快照必须跟上）。
+    // 第 1 道：Token 鉴权——池中 ApiSecurity 策略存在即启用校验，不匹配直接 401（不进总线）。
+    var apiSecurity = cache.GetSecurityPolicy("ApiSecurity");
+    if (apiSecurity is not null && apiSecurity.TryGetValue("Token", out var expectedToken))
+    {
+        // 比对请求 Token。
+        if (!string.Equals(request.Token, expectedToken, StringComparison.Ordinal))
+        {
+            // 401。
+            return Results.Json(new { ok = false, error = "Token 无效或缺失。" }, statusCode: 401);
+        }
+    }
+
+    // 交给意图总线——遇"未注册"类错误时自愈：热重载池中数据后重试一次（带冷却防刷）。
     try
     {
         // 执行动作。
@@ -64,6 +80,16 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
     }
     catch (InvalidOperationException)
     {
+        // 自愈防刷：冷却期内直接拒绝，不触发重载。
+        if (DateTime.UtcNow - lastHealAt < healCooldown)
+        {
+            // 冷却拒绝。
+            return Results.Json(new { ok = false, error = "系统配置缓存冷却中，请稍后重试。" }, statusCode: 429);
+        }
+
+        // 记录本次自愈时间。
+        lastHealAt = DateTime.UtcNow;
+
         // 自愈：池中可能刚插入了新命令/新类型——热重载后重试一次。
         await cache.LoadAsync();
         try

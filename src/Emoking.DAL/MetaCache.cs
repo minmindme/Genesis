@@ -34,6 +34,13 @@ public sealed class MetaType
     /// 用于反向挂载时知道哪个属性值行对应哪个 C# 属性。
     /// </summary>
     public Dictionary<string, Guid> PropertyTypeIds { get; init; } = new();
+
+    /// <summary>
+    /// 属性数据类型字典：属性名 → 数据类型名（如 Decimal/Int/String）。
+    /// 第 17 轮引入——属性行 Value 升级为 "Name:Type" 格式后由解析器填充；
+    /// 无冒号的旧格式属性行默认 String。动态轨组装按此精确还原，消灭类型推断。
+    /// </summary>
+    public Dictionary<string, string> PropertyDataTypes { get; init; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -348,8 +355,21 @@ public sealed class MetaCache
                 continue;
             }
 
+            // 属性规格解析——第 17 轮格式 "Name:Type"（如 "Amount:Decimal"）。
+            // 旧格式 "Name"（无冒号）= 未声明 DataType → 组装时走按值推断（向后兼容）。
+            var spec = row.Value ?? string.Empty;
+            var colonIndex = spec.IndexOf(':', StringComparison.Ordinal);
+            var propName = colonIndex < 0 ? spec : spec[..colonIndex];
+
             // 属性名 → 属性 TypeId 写入所属类型的字典。
-            ownerType.PropertyTypeIds[row.Value ?? string.Empty] = row.Id;
+            ownerType.PropertyTypeIds[propName] = row.Id;
+
+            // 显式声明了 DataType 才写入——未声明条目不写入（推断回退的判据）。
+            if (colonIndex >= 0)
+            {
+                // 写入声明的数据类型。
+                ownerType.PropertyDataTypes[propName] = spec[(colonIndex + 1)..];
+            }
         }
 
         // 第三遍：解析引擎指令行（Role=4）——包含路由指令与一般指令（如 StorageProvider）。

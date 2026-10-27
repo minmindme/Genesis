@@ -26,6 +26,9 @@ public sealed class UniversalActionBus
     // 内置系统动作：一次拉回全部类型、命令与 UI Schema——通用前端渲染器的数据源。
     public const string GetSystemSchemaAction = "GetSystemSchema";
 
+    // 内置业务动作：级联软删实体行及其全部子行（属性、出边）。
+    public const string DeleteDataAction = "DeleteData";
+
     // 元数据缓存。
     private readonly MetaCache _metaCache;
 
@@ -101,10 +104,75 @@ public sealed class UniversalActionBus
             // 拉取系统 Schema（类型 + 命令 + UI）。
             GetSystemSchemaAction => GetSystemSchema(),
 
+            // 级联软删。
+            DeleteDataAction => await DeleteDataAsync(args),
+
             // 无法识别的动作。
             _ => throw new InvalidOperationException(
-                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}）。")
+                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}）。")
         };
+    }
+
+    /// <summary>
+    /// 级联软删——软删实体行 + 全部 ParentId 指向它的子行（属性行、出边行）。
+    /// </summary>
+    /// <remarks>
+    /// 保持池子干净：实体消失后其属性行与出边不会成为孤儿。
+    /// 诚实边界：反向边（挂在其他实体下的入边）本轮不清理——列为旁支。
+    /// </remarks>
+    /// <param name="args">参数：EntityId。</param>
+    /// <returns>实际软删的行数。</returns>
+    private async Task<object> DeleteDataAsync(IReadOnlyDictionary<string, string> args)
+    {
+        // 取实体行 Id。
+        var entityIdText = RequireArg(args, "EntityId");
+
+        // 解析 Guid。
+        if (!Guid.TryParse(entityIdText, out var entityId))
+        {
+            // 抛出格式异常。
+            throw new InvalidOperationException($"EntityId '{entityIdText}' 不是合法的 Guid。");
+        }
+
+        // 实体行必须存在。
+        var entityRow = await _store.GetByIdAsync(entityId);
+
+        // 不存在。
+        if (entityRow is null)
+        {
+            // 抛出异常。
+            throw new InvalidOperationException($"实体行 {entityId} 不存在或不可见。");
+        }
+
+        // 收集待删行——实体行 + 全部子行。
+        var pendingDeletes = new List<Guid> { entityId };
+
+        // 指针追逐取子行（属性行、出边行）。
+        var children = await _store.GetByParentIdAsync(entityId);
+
+        // 逐子行加入。
+        foreach (var child in children)
+        {
+            // 加入待删。
+            pendingDeletes.Add(child.Id);
+        }
+
+        // 逐行软删。
+        var deleted = 0;
+
+        // 遍历软删。
+        foreach (var rowId in pendingDeletes)
+        {
+            // 软删命中计数。
+            if (await _store.DeleteAsync(rowId))
+            {
+                // 累计。
+                deleted++;
+            }
+        }
+
+        // 返回删除行数。
+        return deleted;
     }
 
     /// <summary>

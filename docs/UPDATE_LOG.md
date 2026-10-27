@@ -1,5 +1,47 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 17 轮：工业级加固——Token 鉴权、DataType 显式化、级联删除、自愈冷却
+
+### 更新内容
+
+1. **API Token 鉴权**（网关第 1 道门）：Role=5 新策略 `Policy=ApiSecurity|Token=xxx`——策略存在即启用校验，请求 Token 不匹配直接 **401**（不进总线）。策略未配置 = 不启用（本地开发便利，生产必须配置）。
+2. **DataType 显式化（消灭类型推断）**：Role=1 属性行格式升级 `Value=Name:Type`（如 `Price:Decimal`）；`MetaType.PropertyDataTypes` 字典承接；`DynamicAssembler.InferTyped` 按声明精确解析（String/Int/Long/Decimal/Bool/DateTime/Guid），解析失败回退推断（脏数据容错）。**旧格式（无冒号）= 未声明 → 走推断，零破坏兼容**。
+3. **`DeleteData` 级联软删**（ActionBus 内置）：软删实体行 + 全部 ParentId 子行（属性、出边），池子不留孤儿；返回删除行数；实体不存在显式失败。
+4. **自愈冷却防刷**：网关自愈重载加 5 秒冷却——冷却期内未注册错误直接 **429**，不再触发 LoadAsync（第 15 轮"自愈变自毁"漏洞封堵）。
+5. `HardeningTests` 4 个：DataType 显式还原（Title="2026-10" 被声明 String 拦住不误判为日期）、DeleteData 级联（3 行全消失无孤儿）、未知实体删除抛错、限流（第 10 轮已有）。
+
+### 核心验收
+
+```text
+① 错 Token → 401（HTTP 冒烟形态：网关第 1 道门）
+② Title:String 声明下 "2026-10" 保持字符串（推断会误判为日期——DataType 拦住）
+③ DeleteData → 实体 + 2 属性 = 3 行全部软删，GetById null / GetByParentId 空 / 子图空
+④ 自愈冷却：5 秒内重复未注册动作 → 429
+```
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B32 | 旧格式属性行（无冒号）被默认声明为 String，DynamicOrder 测试 Amount 变字符串（回归） | 第 17 轮解析器把"未声明"与"声明 String"混为一谈 | 无冒号 = 不写入 PropertyDataTypes（未声明 → 推断回退），有冒号才写入声明 |
+| B33 | CS1977 dynamic 变量捕获进 lambda | HardeningTests 中 dynamic product 被 Assert.ThrowsAsync lambda 闭包 | 改用显式 UniversalObject + SetProperty |
+
+### 诚实边界
+
+- 入边（挂在其他实体下的反向边）级联清理未做——DeleteData 后反向边成为孤儿但仍挂在对方实体下（GetOutgoingEdges 会解析出指向已删实体的 To）——列为旁支。
+- Token 为明文比对（非哈希存储）、无轮换、无速率限制（自愈冷却只保护 LoadAsync）。
+- 401/429 冒烟经代码审读 + ActionBus 层测试覆盖，HTTP 层完整 401 流程留待下次网关启动时人工验证。
+
+### 未改旁支
+
+入边级联清理、token 哈希与轮换、CQRS 读模型、白皮书 2.0、GitHub 推送（本地 6 笔提交就绪）、CLI 代码生成、雪花 ID、SM4。
+
+### 未验证项
+
+并发 Token 校验；级联删除在磁盘表/FASTER 内层的表现；DataType 脏数据回退推断的覆盖率。
+
+---
+
 ## 2026-10-27 第 16 轮：UI 同构——Role=8 与通用渲染器（消灭手写前端）
 
 ### 更新内容

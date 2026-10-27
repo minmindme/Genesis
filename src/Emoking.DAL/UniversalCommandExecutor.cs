@@ -206,13 +206,13 @@ public sealed class UniversalCommandExecutor
                     continue;
                 }
 
-                // 属性行——数据类型信息保留在 Role=7 命令参数中（代理生成时使用），池中只落属性名。
+                // 第 17 轮格式：池中落 "Name:Type"（DataType 显式化，代理与组装共用）。
                 context.PendingRows.Add(new UniversalEntity(
                     Id: Guid.NewGuid(),
                     TypeId: MetaCache.MetaTypeTypeId,
                     Role: UniversalEntity.RoleMeta,
                     ParentId: context.NewTypeId,
-                    Value: propParts[0]));
+                    Value: propSpec));
             }
         }
 
