@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genesis 同构前端（通用渲染器）</title>
+    <style>
+        body { font-family: "Microsoft YaHei", sans-serif; max-width: 720px; margin: 24px auto; padding: 0 12px; background: #fafafa; }
+        h1 { font-size: 20px; } h2 { font-size: 16px; margin-bottom: 6px; }
+        form { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+        label { display: block; margin: 8px 0 2px; font-size: 13px; color: #444; }
+        input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; }
+        button { margin-top: 10px; padding: 6px 16px; background: #2d6cdf; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #1d55c0; }
+        .result { margin-top: 6px; font-size: 13px; color: #0a7d32; word-break: break-all; }
+        .error { color: #c0392b; }
+    </style>
+</head>
+<body>
+    <h1>Genesis 同构前端</h1>
+    <p>以下全部表单由池中 Role=8 UI Schema 动态生成——本页面没有任何业务代码。</p>
+    <div id="forms"></div>
+
+    <!-- 通用渲染器：拉 Schema → 动态生成表单 → 提交发 Action -->
+    <script>
+        // 网关地址——同源部署。
+        var GATEWAY = "/api/genesis";
+
+        // 调用意图总线。
+        async function callAction(action, args) {
+            // 组装请求。
+            var response = await fetch(GATEWAY, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: action, args: args })
+            });
+
+            // 解析响应。
+            var payload = await response.json();
+
+            // 业务错误上抛。
+            if (payload.ok === false) { throw new Error(payload.error || "未知错误"); }
+
+            // 返回结果。
+            return payload.result;
+        }
+
+        // 渲染单个表单——UI Schema 驱动。
+        function renderForm(container, uiName, ui) {
+            // 表单骨架。
+            var form = document.createElement("form");
+            var title = document.createElement("h2");
+            title.textContent = uiName + "（" + (ui.Entity || "-") + "）";
+            form.appendChild(title);
+
+            // 字段输入框——Fields=Title:Input,Price:Number。
+            var inputs = {};
+            (ui.Fields || "").split(",").forEach(function (spec) {
+                // 空段跳过。
+                if (!spec) { return; }
+
+                // 字段名:控件类型。
+                var parts = spec.split(":");
+                var fieldName = parts[0];
+                var inputType = (parts[1] || "Input").toLowerCase();
+
+                // 标签。
+                var label = document.createElement("label");
+                label.textContent = fieldName;
+                form.appendChild(label);
+
+                // 输入框——Number 用 number 控件，其余 text。
+                var input = document.createElement("input");
+                input.type = inputType === "number" ? "number" : "text";
+                input.step = "any";
+                input.name = fieldName;
+                form.appendChild(input);
+                inputs[fieldName] = input;
+            });
+
+            // 结果回显。
+            var resultLine = document.createElement("div");
+            resultLine.className = "result";
+            form.appendChild(resultLine);
+
+            // 提交按钮——按 UI.Action 打包 InsertData 意图。
+            var submit = document.createElement("button");
+            submit.textContent = "提交（" + (ui.Action || "InsertData") + "）";
+            submit.type = "submit";
+            form.appendChild(submit);
+
+            // 提交逻辑——收集字段值组装 Data。
+            form.addEventListener("submit", async function (event) {
+                // 阻止默认刷新。
+                event.preventDefault();
+
+                // 收集字段值——Number 转数值。
+                var data = {};
+                Object.keys(inputs).forEach(function (fieldName) {
+                    var raw = inputs[fieldName].value;
+                    data[fieldName] = inputTypeOf(inputs[fieldName]) === "number" && raw !== "" ? parseFloat(raw) : raw;
+                });
+
+                // 发送 InsertData 意图。
+                try {
+                    var result = await callAction(ui.Action || "InsertData", {
+                        TypeName: ui.Entity,
+                        Data: JSON.stringify(data)
+                    });
+
+                    // 成功回显。
+                    resultLine.className = "result";
+                    resultLine.textContent = "已写入：" + JSON.stringify(result);
+                } catch (error) {
+                    // 失败回显。
+                    resultLine.className = "result error";
+                    resultLine.textContent = "失败：" + error.message;
+                }
+            });
+
+            // 辅助：读取输入控件类型。
+            function inputTypeOf(input) { return input.type; }
+
+            // 挂载。
+            container.appendChild(form);
+        }
+
+        // 启动：拉系统 Schema 并渲染全部 UI。
+        (async function () {
+            // 表单容器。
+            var container = document.getElementById("forms");
+
+            // 拉取 Schema。
+            try {
+                // 调用系统动作。
+                var schema = await callAction("GetSystemSchema", {});
+
+                // 无 UI 时提示。
+                if (!schema.Uis || Object.keys(schema.Uis).length === 0) {
+                    container.textContent = "池中尚未注册 Role=8 UI Schema——插入一行即可长出表单。示例：UI=ProductForm|Entity=Product|Fields=Title:Input,Price:Number|Action=InsertData";
+                    return;
+                }
+
+                // 逐 UI 渲染。
+                Object.keys(schema.Uis).forEach(function (uiName) {
+                    renderForm(container, uiName, schema.Uis[uiName]);
+                });
+            } catch (error) {
+                // 拉取失败回显。
+                container.textContent = "加载 Schema 失败：" + error.message;
+            }
+        })();
+    </script>
+</body>
+</html>

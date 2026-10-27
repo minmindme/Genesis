@@ -1,5 +1,53 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 16 轮：UI 同构——Role=8 与通用渲染器（消灭手写前端）
+
+### 更新内容
+
+1. `UniversalEntity.RoleUi = 8`：前端界面描述成为池中数据。
+   行格式：`UI=ProductForm|Type=Form|Entity=Product|Fields=Title:Input,Price:Number|Action=InsertData`。
+2. `MetaCache`：解析 Role=8 → `GetUiSchemas()`（UI 名 → Entity/Fields/Action）。
+3. `UniversalActionBus` 内置系统动作 `GetSystemSchema`：一次拉回全部 Types + Commands + Uis——通用渲染器的唯一数据源。
+4. **`Genesis.Web/wwwroot/index.html`**：通用渲染器（原生 JS，零业务代码）——
+   - 启动时 POST GetSystemSchema 拉取 Schema；
+   - 遍历 Uis 动态生成 `<form>/<input>`（Number 字段映射 number 控件）；
+   - 提交时按 UI.Action 打包 InsertData 意图（字段值 JSON 化为 Data）。
+5. `Genesis.Gateway` 托管静态前端：`WebApplicationOptions.WebRootPath` 指向 `Genesis.Web/wwwroot`。
+6. `UiSchemaTests` 3 个：GetSystemSchema 含 UI 描述、按 UI 字段 InsertData→GetData 往返、无 Role=8 返回空集合。
+
+### HTTP 冒烟（GenesisIso）
+
+```text
+① sqlcmd 插入 3 行：Product 类型（Role=1）+ StorageMode=Snapshot（Role=4）+ ProductForm UI（Role=8）
+② GET  http://localhost:5506/index.html → 200（通用渲染器，无任何业务代码）
+③ POST GetSystemSchema → Uis 含 ProductForm（Fields/Action 完整）
+④ POST InsertData（模拟表单提交）→ EntityId 落库
+```
+
+**质变**：新增"库存管理"模块 = 通过网关发 2 个意图（CreateEntity + CreateUI）→ 刷新浏览器自动长出表单——前端、后端、数据库三层全部由池中数据驱动。
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B30 | 网关启动崩溃：Cannot open log for source '.NET Runtime'（拒绝访问） | Production 环境默认注册 Windows EventLog logger，沙箱无写权限 | `builder.Logging.ClearProviders() + AddConsole()` |
+| B31 | index.html 404（文件在 bin 却 404） | `dotnet run` 的 WebRoot 指向项目目录（无 wwwroot）；`builder.WebHost.UseWebRoot` 在 WebApplicationBuilder 下被禁止 | 改用 `WebApplicationOptions.WebRootPath` 指向 `Genesis.Web/wwwroot` |
+
+### 诚实边界
+
+- 通用渲染器仅支持 Form + Input/Number 控件（嵌套/列表/校验规则未做）；无鉴权（沿用第 15 轮边界）；CSS 极简。
+- 快照模式 + UI 是"零元数据负担"组合（schema 在类/JSON）；图模式实体配 UI 时 Fields 需与 Role=1 属性行对齐（InsertData 动态轨会拒绝未注册属性——语义正确）。
+
+### 未改旁支
+
+校验规则指令、嵌套/列表控件、CSS 主题、前端框架版本、100K 压测、白皮书 2.0、CLI 代码生成、DirtyGraph、雪花 ID、SM4。
+
+### 未验证项
+
+浏览器端真实交互（本轮回显经 HTTP 层验证，DOM 渲染逻辑靠代码审读）；多个 UI 共存时的布局；UI Schema 指向不存在实体时的渲染表现。
+
+---
+
 ## 2026-10-27 第 15 轮：意图总线与哑巴网关——POST /api/genesis 一个入口
 
 ### 更新内容

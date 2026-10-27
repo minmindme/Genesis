@@ -1,8 +1,18 @@
 // ANCHOR: gateway.program - 哑巴 HTTP 路由器：整个后端只有一个入口
 using Emoking.DAL;
 
-// 构建网关。
-var builder = WebApplication.CreateBuilder(args);
+// 构建网关——WebRoot 指向 Genesis.Web/wwwroot（同构前端资产独立目录，CreateBuilder 选项方式设置）。
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    // 保留命令行参数（--urls 等）。
+    Args = args,
+    // WebRoot 指向 Genesis.Web/wwwroot。
+    WebRootPath = Path.Combine("..", "Genesis.Web", "wwwroot")
+});
+
+// 清空默认日志提供程序——沙箱无 Windows 事件日志写权限（B30），控制台输出足够。
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
 // 注册单表仓储与连接工厂。
 builder.Services.AddSingleton<EmokingDbContext>();
@@ -15,6 +25,10 @@ builder.Services.AddSingleton<MetaCache>();
 builder.Services.AddSingleton<UniversalEntityGateway>();
 
 var app = builder.Build();
+
+// 同构前端——静态托管 Genesis.Web/wwwroot（通用渲染器 index.html）。
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 // 启动时自举元数据并按池中 StorageProvider 指令落位存储引擎——网关不关心是哪个引擎。
 var cache = app.Services.GetRequiredService<MetaCache>();

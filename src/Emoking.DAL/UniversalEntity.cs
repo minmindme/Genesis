@@ -54,4 +54,9 @@ public sealed record UniversalEntity(
     /// 角色常量：Command CLI 命令与工作流定义（命令树即数据）。
     /// </summary>
     public const byte RoleCommand = 7;
+
+    /// <summary>
+    /// 角色常量：UI Schema（前端表单与界面描述——通用渲染器的数据源）。
+    /// </summary>
+    public const byte RoleUi = 8;
 }

@@ -23,6 +23,9 @@ public sealed class UniversalActionBus
     // 内置业务动作：按实体行 Id 读回业务数据。
     public const string GetDataAction = "GetData";
 
+    // 内置系统动作：一次拉回全部类型、命令与 UI Schema——通用前端渲染器的数据源。
+    public const string GetSystemSchemaAction = "GetSystemSchema";
+
     // 元数据缓存。
     private readonly MetaCache _metaCache;
 
@@ -86,7 +89,7 @@ public sealed class UniversalActionBus
             return await _commandExecutor.RunAsync(argv);
         }
 
-        // 路由二：内置业务动作。
+        // 路由二：内置业务/系统动作。
         return action switch
         {
             // 写入业务数据。
@@ -95,9 +98,34 @@ public sealed class UniversalActionBus
             // 读取业务数据。
             GetDataAction => await GetDataAsync(args),
 
+            // 拉取系统 Schema（类型 + 命令 + UI）。
+            GetSystemSchemaAction => GetSystemSchema(),
+
             // 无法识别的动作。
             _ => throw new InvalidOperationException(
-                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}）。")
+                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}）。")
+        };
+    }
+
+    /// <summary>
+    /// 拉取系统 Schema——类型清单、可用命令与全部 UI Schema，前端通用渲染器的唯一数据源。
+    /// </summary>
+    /// <returns>系统 Schema 字典。</returns>
+    private object GetSystemSchema()
+    {
+        // 组装系统 Schema。
+        return new Dictionary<string, object?>
+        {
+            // 全部实体类型。
+            ["Types"] = _metaCache.GetAllTypes().Values
+                .Select(metaType => new { metaType.TypeId, metaType.TypeName })
+                .ToList(),
+
+            // 全部 CLI/工作流命令。
+            ["Commands"] = _metaCache.GetCommandNames().ToList(),
+
+            // 全部 UI Schema。
+            ["Uis"] = _metaCache.GetUiSchemas()
         };
     }
 

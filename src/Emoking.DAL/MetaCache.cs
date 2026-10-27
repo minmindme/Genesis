@@ -102,6 +102,9 @@ public sealed class MetaCache
     // CLI 命令缓存：命令名 → 键值对集合（Role=7 解析结果）。
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _commands = new(StringComparer.Ordinal);
 
+    // UI Schema 缓存：UI 名 → 键值对集合（Role=8 解析结果）。
+    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _uiSchemas = new(StringComparer.Ordinal);
+
     // 实体类型缓存：TypeId → MetaType
     private readonly ConcurrentDictionary<Guid, MetaType> _types = new();
 
@@ -138,6 +141,7 @@ public sealed class MetaCache
         _engines.Clear();
         _securityPolicies.Clear();
         _commands.Clear();
+        _uiSchemas.Clear();
         _storageProviderName = null;
 
         // 一次性拉取全部 Role=1 与 Role=4 行——安全策略（Role=5）按需增量拉取，见下方。
@@ -153,6 +157,11 @@ public sealed class MetaCache
         // 一次性拉取全部 Role=7 CLI 命令行。
         var commandRows = await _repository.GetByRolesAsync(
             [UniversalEntity.RoleCommand],
+            cancellationToken);
+
+        // 一次性拉取全部 Role=8 UI Schema 行。
+        var uiRows = await _repository.GetByRolesAsync(
+            [UniversalEntity.RoleUi],
             cancellationToken);
 
         // 没有任何元数据行说明数据池是空的——执行创世播种。
@@ -180,6 +189,9 @@ public sealed class MetaCache
 
         // 解析 CLI 命令行。
         ParseCommands(commandRows);
+
+        // 解析 UI Schema 行。
+        ParseUiSchemas(uiRows);
     }
 
     /// <summary>
@@ -506,6 +518,43 @@ public sealed class MetaCache
 
         // 未注册。
         return null;
+    }
+
+    /// <summary>
+    /// 解析 Role=8 UI Schema 行——UI 名 → 键值对集合。
+    /// </summary>
+    /// <param name="rows">Role=8 行集合。</param>
+    private void ParseUiSchemas(IReadOnlyList<UniversalEntity> rows)
+    {
+        // 逐行解析。
+        foreach (var row in rows)
+        {
+            // 解析键值对——与引擎指令同格式。
+            var settings = ParseEngineCommand(row.Value);
+
+            // 缺 UI 键的行视为非法，跳过。
+            if (!settings.TryGetValue("UI", out var uiName) || string.IsNullOrWhiteSpace(uiName))
+            {
+                // 跳过非法 UI 行。
+                continue;
+            }
+
+            // 以 UI 名为键缓存。
+            _uiSchemas[uiName] = settings;
+        }
+    }
+
+    /// <summary>
+    /// 全量导出 UI Schema——通用渲染器拉取界面描述的入口。
+    /// </summary>
+    /// <returns>UI 名 → 键值对集合（含 Entity/Fields/Action）。</returns>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> GetUiSchemas()
+    {
+        // 导出只读视图。
+        return _uiSchemas.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyDictionary<string, string>)pair.Value,
+            StringComparer.Ordinal);
     }
 
     /// <summary>
