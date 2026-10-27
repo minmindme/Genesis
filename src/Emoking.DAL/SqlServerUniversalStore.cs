@@ -96,4 +96,32 @@ public sealed class SqlServerUniversalStore : IUniversalStore
         // 委托仓储软删除。
         return _repository.SoftDeleteAsync(id, cancellationToken);
     }
+
+    /// <summary>
+    /// 条件覆盖写入（CAS upsert）——委托仓储的乐观锁实现。
+    /// </summary>
+    /// <param name="entities">待写入的行集合；更新行必须携带与存储一致的 Version。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终行集合。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> UpsertAsync(
+        IReadOnlyList<UniversalEntity> entities,
+        CancellationToken cancellationToken = default)
+    {
+        // 委托仓储 CAS upsert。
+        return _repository.UpsertAsync(entities, cancellationToken);
+    }
+
+    /// <summary>
+    /// 批量软删——委托仓储的单事务实现。
+    /// </summary>
+    /// <param name="ids">待软删的行 Id 集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>实际软删的行数。</returns>
+    public Task<int> DeleteManyAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken = default)
+    {
+        // 委托仓储单事务批量软删。
+        return _repository.SoftDeleteManyAsync(ids, cancellationToken);
+    }
 }

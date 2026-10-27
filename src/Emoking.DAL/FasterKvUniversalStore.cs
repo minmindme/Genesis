@@ -78,11 +78,16 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
     }
 
     /// <summary>
-    /// 整包写入——逐行打包为字节后 Upsert 进 FASTER。
+    /// 整包写入——纯插入语义：写入前做存在性检查，同 Id 已存在时显式失败。
     /// </summary>
+    /// <remarks>
+    /// 第 20 轮语义对齐：BulkInsert 是纯插入（FASTER 的 Upsert 天然覆盖，
+    /// 纯插语义靠先 Read 检查实现）；覆盖写入请用 <see cref="UpsertAsync"/>。
+    /// </remarks>
     /// <param name="entities">待写入的行集合。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>写入的行数。</returns>
+    /// <exception cref="InvalidOperationException">同 Id 行已存在时抛出。</exception>
     public Task<int> BulkInsertAsync(
         IReadOnlyList<UniversalEntity> entities,
         CancellationToken cancellationToken = default)
@@ -90,14 +95,29 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
         // 打开会话。
         using var session = NewSession();
 
-        // 逐行打包写入。
+        // 逐行存在性检查 + 写入。
         foreach (var entity in entities)
         {
-            // 准备 ref 参数——FASTER API 全 ref 传参。
+            // 准备 ref 参数。
             var key = entity.Id;
+            var input = Array.Empty<byte>();
+            var output = Array.Empty<byte>();
+
+            // 先读——FASTER 的 Upsert 天然覆盖，纯插语义靠存在性检查保证。
+            session.Read(ref key, ref input, ref output);
+
+            // 命中即冲突（软删行按存在处理——物理记录仍在）。
+            if (output.Length > 0)
+            {
+                // 抛出冲突异常。
+                throw new InvalidOperationException(
+                    $"行 {entity.Id} 已存在——BulkInsert 是纯插入语义，覆盖写入请使用 UpsertAsync。");
+            }
+
+            // 打包写入。
             var value = UniversalEntityCodec.Pack(entity);
 
-            // Upsert——同 Id 覆盖。
+            // 纯插入。
             session.Upsert(ref key, ref value);
         }
 
@@ -168,8 +188,11 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
                 // 解包。
                 var row = UniversalEntityCodec.Unpack(value);
 
-                // 属性行命中：未删除且 ParentId 指向锚点集。
-                if (!row.IsDeleted && row.ParentId is not null && entityIds.Contains(row.ParentId.Value))
+                // 属性行命中：未删除、ParentId 指向锚点集、且非历史行（Role=6 排除）。
+                if (!row.IsDeleted
+                    && row.ParentId is not null
+                    && entityIds.Contains(row.ParentId.Value)
+                    && row.Role != UniversalEntity.RoleHistory)
                 {
                     // 加入结果集。
                     results.Add(row);
@@ -259,8 +282,8 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
                 // 解包。
                 var row = UniversalEntityCodec.Unpack(value);
 
-                // 匹配 ParentId 且未删除。
-                if (!row.IsDeleted && row.ParentId == parentId)
+                // 匹配 ParentId、未删除、且非历史行（Role=6 排除，防历史污染活数据）。
+                if (!row.IsDeleted && row.ParentId == parentId && row.Role != UniversalEntity.RoleHistory)
                 {
                     // 命中。
                     results.Add(row);
@@ -304,6 +327,161 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
 
         // 命中。
         return true;
+    }
+
+    /// <summary>
+    /// 条件覆盖写入（CAS upsert）——行不存在则插入；存在则按 Version 乐观锁更新并落历史行。
+    /// </summary>
+    /// <remarks>
+    /// FASTER 无事务与原生 CAS——本实现靠"读-校验-写"序列保证语义；
+    /// 并发窗口内理论上存在竞态，与既有单会话语义水位一致（第 7 轮诚实边界）。
+    /// 诚实边界：FASTER 的二进制打包不含 CreatedAt/UpdatedAt（codec 列限制），
+    /// 历史行的时间戳审计能力以 SqlServer/InMemory 为准。
+    /// </remarks>
+    /// <param name="entities">待写入的行集合；更新行必须携带与存储一致的 Version。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终行集合。</returns>
+    /// <exception cref="InvalidOperationException">Version 不匹配时抛出。</exception>
+    public Task<IReadOnlyList<UniversalEntity>> UpsertAsync(
+        IReadOnlyList<UniversalEntity> entities,
+        CancellationToken cancellationToken = default)
+    {
+        // 打开会话。
+        using var session = NewSession();
+
+        // 收集落库后的最终行。
+        var results = new List<UniversalEntity>(entities.Count);
+
+        // 逐行处理。
+        foreach (var entity in entities)
+        {
+            // 第 1 步：读现存行。
+            var existing = ReadRow(session, entity.Id);
+
+            // 分支一：行不存在（或已软删）→ 插入。
+            if (existing is null || existing.IsDeleted)
+            {
+                // 打包写入。
+                var insertKey = entity.Id;
+                var insertValue = UniversalEntityCodec.Pack(entity);
+
+                // 纯插入。
+                session.Upsert(ref insertKey, ref insertValue);
+
+                // 返回输入行。
+                results.Add(entity);
+
+                // 下一行。
+                continue;
+            }
+
+            // 分支二前置校验：Version 快速比对。
+            if (existing.Version != entity.Version)
+            {
+                // 抛出乐观锁冲突。
+                throw new InvalidOperationException(
+                    $"乐观锁冲突：行 {entity.Id} 存储版本为 {existing.Version}，请求版本为 {entity.Version}——请重读后重试。");
+            }
+
+            // 第 2 步：旧行落成历史行——Role=6、新 Id、ParentId 指向当前行。
+            var historyRow = existing with
+            {
+                // 历史行 Id 换新。
+                Id = Guid.NewGuid(),
+                // 角色改为历史。
+                Role = UniversalEntity.RoleHistory,
+                // 挂到被更新的当前行下。
+                ParentId = existing.Id
+            };
+
+            // 历史行打包写入（新 key 不冲突）。
+            var historyKey = historyRow.Id;
+            var historyValue = UniversalEntityCodec.Pack(historyRow);
+
+            // 写入历史行。
+            session.Upsert(ref historyKey, ref historyValue);
+
+            // 第 3 步：构造更新后的行——Version 递增、CreatedAt 保留。
+            var updatedRow = entity with
+            {
+                // 乐观锁版本递增。
+                Version = existing.Version + 1,
+                // 创建时间保留旧行值。
+                CreatedAt = existing.CreatedAt,
+                // 更新时间取当前。
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // 覆盖主键。
+            var mainKey = entity.Id;
+            var mainValue = UniversalEntityCodec.Pack(updatedRow);
+
+            // 覆盖写入。
+            session.Upsert(ref mainKey, ref mainValue);
+
+            // 返回落库后的最终行。
+            results.Add(updatedRow);
+        }
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(results);
+    }
+
+    /// <summary>
+    /// 会话内按主键读一行（不做软删过滤——调用方自行判断）。
+    /// </summary>
+    /// <param name="session">FASTER 客户端会话。</param>
+    /// <param name="id">行 Id。</param>
+    /// <returns>读到的行；未命中返回 null。</returns>
+    private static UniversalEntity? ReadRow(
+        ClientSession<Guid, byte[], byte[], byte[], Empty, SimpleFunctions<Guid, byte[]>> session,
+        Guid id)
+    {
+        // 准备 ref 参数。
+        var key = id;
+        var input = Array.Empty<byte>();
+        var output = Array.Empty<byte>();
+
+        // FASTER 读取。
+        session.Read(ref key, ref input, ref output);
+
+        // 空数组表示未命中。
+        if (output.Length == 0)
+        {
+            // 未命中。
+            return null;
+        }
+
+        // 解包返回。
+        return UniversalEntityCodec.Unpack(output);
+    }
+
+    /// <summary>
+    /// 批量软删——逐行委托单行软删（FASTER 无事务，与既有并发水位一致）。
+    /// </summary>
+    /// <param name="ids">待软删的行 Id 集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>实际软删的行数。</returns>
+    public async Task<int> DeleteManyAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken = default)
+    {
+        // 累计命中数。
+        var deleted = 0;
+
+        // 逐行软删。
+        foreach (var id in ids)
+        {
+            // 命中计数。
+            if (await DeleteAsync(id, cancellationToken))
+            {
+                // 累计。
+                deleted++;
+            }
+        }
+
+        // 返回命中数。
+        return deleted;
     }
 
     /// <summary>

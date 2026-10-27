@@ -51,6 +51,13 @@ public sealed record UniversalEntity(
     public const byte RoleSecurity = 5;
 
     /// <summary>
+    /// 角色常量：History 历史行（第 20 轮）——upsert 覆盖前的旧行快照，
+    /// ParentId 指向被更新的当前行，"历史"仍是同构的行（system as history）。
+    /// 指针追逐与子图预取默认排除本角色（历史不污染活数据，级联删除不误删审计）。
+    /// </summary>
+    public const byte RoleHistory = 6;
+
+    /// <summary>
     /// 角色常量：Command CLI 命令与工作流定义（命令树即数据）。
     /// </summary>
     public const byte RoleCommand = 7;

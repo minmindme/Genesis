@@ -110,6 +110,10 @@ public sealed class MetaCache
     // 仓储引用，用于启动时从数据库拉元数据与自播种。
     private readonly UniversalEntityRepository _repository;
 
+    // 加载串行化锁——第 20 轮半修：并发 LoadAsync 时防止同时播种创世行（固定 Guid 主键冲突）
+    // 或后写快照覆盖先写快照；读方不受影响（快照替换原子）。
+    private readonly SemaphoreSlim _loadLock = new(1, 1);
+
     /// <summary>
     /// 不可变元数据快照——一次 LoadAsync 的全部解析结果。
     /// </summary>
@@ -164,60 +168,71 @@ public sealed class MetaCache
     /// <returns>表示异步加载操作完成的任务。</returns>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        // 在局部快照中构建——加载全程不动已发布的 _snapshot，并发读始终看到上一份完整快照。
-        var snapshot = new MetaSnapshot();
+        // 串行化加载——并发调用排队执行，防止同时播种/快照互相覆盖（第 20 轮半修）。
+        await _loadLock.WaitAsync(cancellationToken);
 
-        // 一次性拉取全部 Role=1 与 Role=4 行——安全策略、命令、UI 行分别单独拉取。
-        var metaRows = await _repository.GetByRolesAsync(
-            [UniversalEntity.RoleMeta, UniversalEntity.RoleEngine],
-            cancellationToken);
-
-        // 一次性拉取全部 Role=5 安全策略行。
-        var policyRows = await _repository.GetByRolesAsync(
-            [UniversalEntity.RoleSecurity],
-            cancellationToken);
-
-        // 一次性拉取全部 Role=7 CLI 命令行。
-        var commandRows = await _repository.GetByRolesAsync(
-            [UniversalEntity.RoleCommand],
-            cancellationToken);
-
-        // 一次性拉取全部 Role=8 UI Schema 行。
-        var uiRows = await _repository.GetByRolesAsync(
-            [UniversalEntity.RoleUi],
-            cancellationToken);
-
-        // 没有任何元数据行说明数据池是空的——执行创世播种。
-        if (!metaRows.Any(row => row.Role == UniversalEntity.RoleMeta))
+        try
         {
-            // 把创世法则写进同构池。
-            await SeedGenesisRowsAsync(cancellationToken);
+            // 在局部快照中构建——加载全程不动已发布的 _snapshot，并发读始终看到上一份完整快照。
+            var snapshot = new MetaSnapshot();
 
-            // 播种后重新拉取——保证内存快照与库中内容严格一致。
-            metaRows = await _repository.GetByRolesAsync(
+            // 一次性拉取全部 Role=1 与 Role=4 行——安全策略、命令、UI 行分别单独拉取。
+            var metaRows = await _repository.GetByRolesAsync(
                 [UniversalEntity.RoleMeta, UniversalEntity.RoleEngine],
                 cancellationToken);
 
-            // 安全策略行同样重新拉取。
-            policyRows = await _repository.GetByRolesAsync(
+            // 一次性拉取全部 Role=5 安全策略行。
+            var policyRows = await _repository.GetByRolesAsync(
                 [UniversalEntity.RoleSecurity],
                 cancellationToken);
+
+            // 一次性拉取全部 Role=7 CLI 命令行。
+            var commandRows = await _repository.GetByRolesAsync(
+                [UniversalEntity.RoleCommand],
+                cancellationToken);
+
+            // 一次性拉取全部 Role=8 UI Schema 行。
+            var uiRows = await _repository.GetByRolesAsync(
+                [UniversalEntity.RoleUi],
+                cancellationToken);
+
+            // 没有任何元数据行说明数据池是空的——执行创世播种。
+            if (!metaRows.Any(row => row.Role == UniversalEntity.RoleMeta))
+            {
+                // 把创世法则写进同构池。
+                await SeedGenesisRowsAsync(cancellationToken);
+
+                // 播种后重新拉取——保证内存快照与库中内容严格一致。
+                metaRows = await _repository.GetByRolesAsync(
+                    [UniversalEntity.RoleMeta, UniversalEntity.RoleEngine],
+                    cancellationToken);
+
+                // 安全策略行同样重新拉取。
+                policyRows = await _repository.GetByRolesAsync(
+                    [UniversalEntity.RoleSecurity],
+                    cancellationToken);
+            }
+
+            // 把同构行解析进局部快照——类型与引擎指令。
+            ParseMetaRows(metaRows, snapshot);
+
+            // 把安全策略行解析进局部快照。
+            ParseSecurityPolicies(policyRows, snapshot);
+
+            // 把 CLI 命令行解析进局部快照。
+            ParseCommands(commandRows, snapshot);
+
+            // 把 UI Schema 行解析进局部快照。
+            ParseUiSchemas(uiRows, snapshot);
+
+            // 全部解析完成后单引用原子替换——这一条赋值是发布点，读方自此读到完整新快照。
+            _snapshot = snapshot;
         }
-
-        // 把同构行解析进局部快照——类型与引擎指令。
-        ParseMetaRows(metaRows, snapshot);
-
-        // 把安全策略行解析进局部快照。
-        ParseSecurityPolicies(policyRows, snapshot);
-
-        // 把 CLI 命令行解析进局部快照。
-        ParseCommands(commandRows, snapshot);
-
-        // 把 UI Schema 行解析进局部快照。
-        ParseUiSchemas(uiRows, snapshot);
-
-        // 全部解析完成后单引用原子替换——这一条赋值是发布点，读方自此读到完整新快照。
-        _snapshot = snapshot;
+        finally
+        {
+            // 释放加载锁——异常路径同样释放。
+            _loadLock.Release();
+        }
     }
 
     /// <summary>

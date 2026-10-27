@@ -138,9 +138,9 @@ public sealed class EndToEndDemoTests
         Assert.Equal("Snapshot", cache.GetStorageMode(OrderTypeId));
         Assert.Equal("Graph", cache.GetStorageMode(PaymentFlowTypeId));
 
-        // 第 2 步：构造网关与进程内存储。
+        // 第 2 步：构造网关与**真库存储**——第 20 轮起端到端验收走 SqlServer（洞 2 的真验收场景）。
         var gateway = new UniversalEntityGateway(cache);
-        var store = new InMemoryUniversalStore();
+        var store = new SqlServerUniversalStore(diskRepository);
 
         // ===== 场景 A：订单快照状态机 =====
 
@@ -165,14 +165,18 @@ public sealed class EndToEndDemoTests
         // 快照模式恒为 1 行。
         Assert.Single(createdRows);
 
-        // 落库。
+        // 落库（纯插入）。
         await store.BulkInsertAsync(createdRows);
 
-        // 原始视角：SNAP1 前缀。
-        var rawRow = await store.GetByIdAsync(createdRows[0].Id);
-        Assert.StartsWith("SNAP1:", rawRow!.Value);
+        // 读回初始行——拿到数据库生成的 CreatedAt 与 Version=1。
+        var originalRow = await store.GetByIdAsync(createdRows[0].Id);
+        Assert.NotNull(originalRow);
+        Assert.Equal(1, originalRow!.Version);
 
-        // 第 4 步：状态流转——支付。整快照覆盖（同 Id 重写）。
+        // 原始视角：SNAP1 前缀。
+        Assert.StartsWith("SNAP1:", originalRow.Value);
+
+        // 第 4 步：状态流转——支付。**CAS upsert 覆盖**（第 20 轮：不再 delete+insert，历史可审计）。
         var paidOrder = new PurchaseOrder
         {
             // 同单号。
@@ -187,17 +191,23 @@ public sealed class EndToEndDemoTests
             CreatedAt = order.CreatedAt
         };
 
-        // 重新拆解并把实体行 Id 对齐旧行——覆盖写。
+        // 重新拆解并对齐旧行 Id 与当前 Version——乐观锁更新。
         var paidRows = gateway.Decompose(paidOrder, OrderTypeId);
-        var paidRow = paidRows[0] with { Id = createdRows[0].Id };
-        await store.BulkInsertAsync(new[] { paidRow });
+        var paidRow = paidRows[0] with { Id = createdRows[0].Id, Version = originalRow.Version };
+        var paidUpserted = (await store.UpsertAsync(new[] { paidRow })).Single();
+
+        // Version 递增（乐观锁生效）。
+        Assert.Equal(2, paidUpserted.Version);
+
+        // CreatedAt 保留原始创建时间（历史不因覆盖重写）。
+        Assert.Equal(originalRow.CreatedAt, paidUpserted.CreatedAt, TimeSpan.FromMilliseconds(1));
 
         // 读回验证状态。
         var subgraphAfterPaid = await store.GetSubGraphAsync(OrderTypeId, UniversalEntity.RoleData);
         var paid = Assert.IsType<PurchaseOrder>(gateway.Assemble(subgraphAfterPaid, OrderTypeId));
         Assert.Equal("Paid", paid.State);
 
-        // 第 5 步：状态流转——发货。
+        // 第 5 步：状态流转——发货（携带上一次递增后的 Version）。
         var shippedOrder = new PurchaseOrder
         {
             // 同单号。
@@ -212,8 +222,11 @@ public sealed class EndToEndDemoTests
             CreatedAt = paid.CreatedAt
         };
         var shippedRows = gateway.Decompose(shippedOrder, OrderTypeId);
-        var shippedRow = shippedRows[0] with { Id = createdRows[0].Id };
-        await store.BulkInsertAsync(new[] { shippedRow });
+        var shippedRow = shippedRows[0] with { Id = createdRows[0].Id, Version = paidUpserted.Version };
+        var shippedUpserted = (await store.UpsertAsync(new[] { shippedRow })).Single();
+
+        // Version 再递增。
+        Assert.Equal(3, shippedUpserted.Version);
 
         // 读回验证。
         var subgraphAfterShipped = await store.GetSubGraphAsync(OrderTypeId, UniversalEntity.RoleData);
@@ -226,8 +239,17 @@ public sealed class EndToEndDemoTests
         Assert.Equal(299.9m, shipped.Amount);
         Assert.Equal(order.CreatedAt, shipped.CreatedAt, TimeSpan.FromMilliseconds(1));
 
-        // 快照模式下订单行数恒为 1——零写放大到多行。
+        // 快照模式下订单**活行**数恒为 1——零写放大到多行（历史行不计入活子图）。
         Assert.Single(subgraphAfterShipped);
+
+        // 第 20 轮新增断言：两次流转各留一行历史——system as history 在真库上可审计。
+        var historyRows = await diskRepository.GetByTypeIdAndRoleAsync(OrderTypeId, UniversalEntity.RoleHistory);
+        Assert.Equal(2, historyRows.Count);
+
+        // 历史行挂在当前行下且保留旧状态值（Created → Paid 两代快照可追溯）。
+        Assert.All(historyRows, row => Assert.Equal(createdRows[0].Id, row.ParentId));
+        Assert.Single(historyRows, row => row.Value!.Contains("\"State\":\"Created\""));
+        Assert.Single(historyRows, row => row.Value!.Contains("\"State\":\"Paid\""));
 
         // ===== 场景 B：支付流水图模式 =====
 

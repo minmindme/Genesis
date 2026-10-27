@@ -1,5 +1,56 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 20 轮：洞 2 重做——Version CAS + 历史行（"能覆盖"升级为"能安全覆盖"）
+
+### 方向校准（接受第 19 轮外部评审）
+
+评审结论：第 19 轮的 delete+insert upsert 是"换了一种错法"——从"写不进去"变成"写进去但历史没了"（硬删历史、漏子行、无 CAS、租户不变量两入口只守一个、热路径额外 DELETE）。本轮按评审行动清单重做，**先红后绿**。
+
+### 更新内容
+
+1. **BulkInsertAsync 回归纯插入**（三引擎一致）：
+   - `UniversalEntityRepository.BulkInsertAsync` 去掉 DELETE 段——同 Id 已存在时主键冲突显式失败；
+   - `InMemoryUniversalStore.BulkInsertAsync` 改 `TryAdd`（冲突抛错，不再静默覆盖）；
+   - `FasterKvUniversalStore.BulkInsertAsync` 写前 Read 存在性检查。
+2. **新增 `IUniversalStore.UpsertAsync`（CAS + 历史行，三引擎 + 装饰器）**：
+   - 行不存在 → 纯插入；存在且 Version 匹配 → 旧行复制为**历史行**（`Role=6 History`，新 Id、ParentId 指向当前行、CreatedAt/UpdatedAt/Version 原样保留）→ CAS UPDATE（`WHERE Id=@id AND Version=@v`，Version=DB 侧 +1，CreatedAt 不动）；
+   - Version 不匹配或并发抢先（UPDATE 命中 0 行）→ `InvalidOperationException`——**并发两写一胜一败，静默覆盖不存在**；
+   - InMemory 用 `TryUpdate`；FASTER 用"读-校验-写"（与既有单会话水位一致的诚实边界）；SqlServer 单事务逐行 CAS，多行全成全败；
+   - `PolicyDrivenStore.UpsertAsync`：限流 → **不可见行拒绝覆盖**（内层存在而本层不可见 = 他人数据，`不可见不可写`）→ 加密 → 委托 → 解密返回。历史行由内层从密文旧行复制，天然保持密文。
+3. **历史行不污染活数据**：`GetByParentIdAsync` / `GetByTypeIdWithChildrenAsync` / `GetByParentIdsAsync`（SqlServer）与 InMemory/FasterKv 对应路径全部排除 `Role=6`。审计链走专门查询（按 Role=6 + ParentId）。
+4. **三个半修**：
+   - `MetaCache.LoadAsync` 加 `SemaphoreSlim(1,1)` 串行化——并发 LoadAsync 不再可能同时播种（固定 Guid 主键冲突）或快照互相覆盖；
+   - `IUniversalStore.DeleteManyAsync`（单事务批量软删）：`DeleteData` 级联删除从逐行改单事务，消灭半删状态；`PolicyDrivenStore.DeleteManyAsync` 全批可见性校验（任一不可见整批拒绝）；
+   - `GetData` 动态轨返回值补 `Id`/`TypeName`——通用 API 返回值可自证身份，agent 可直接发起 DeleteData/InsertEdge。
+5. **测试（先红后绿实录）**：
+   - 红阶段：占位 `NotImplementedException` 下 3 条测试全 FAIL（3/3 红）；
+   - 绿阶段：5/5 通过——
+     ① `Upsert_SameId_PreservesCreatedAt_IncrementsVersion_WritesHistoryRow`（真库：CreatedAt 保留、Version 1→2、历史行 Value/Version/时间戳全对、指针追逐无污染）；
+     ② `Upsert_ConcurrentWriters_OneWins_OneConflicts`（真库并发：恰好 1 胜 1 抛冲突、最终 Version=2）；
+     ③ `Upsert_InvisibleRow_RejectedForOtherTenant`（真库：租户 B upsert 租户 A 的行被拒、数据完好）；
+     ④ ⑤ InMemory/FasterKv 语义对齐（CAS 递增 + 过期 Version 冲突 + 纯插拒绝 + 历史行不污染）。
+   - `EndToEndDemoTests` 换 `SqlServerUniversalStore`（评审指认的真验收场景）：快照状态机 3 次流转 = BulkInsert 纯插 1 次 + Upsert 2 次，Version 1→2→3、CreatedAt 全程不变、**2 行历史留痕**（Created/Paid 两代快照可查）、活子图仍恒 1 行。
+
+### 验收
+
+- `dotnet build Genesis.slnx`：0 警告 0 错误。
+- 全量回归：**62 通过 / 0 失败 / 5 跳过（基准门禁）**（旧 57 + 新 5）。
+- 先红后绿：红 3/3 → 绿 5/5。
+
+### 诚实边界
+
+- **图模式实体 upsert 的子行替换未做**：`UpsertAsync` 是行级语义——图模式实体更新时旧属性行不会自动清理（`DynamicAssembler` 按 TypeId 取 FirstOrDefault 可能读到旧值）。本轮以快照模式闭环（EndToEnd 真库验收）；子图替换语义（先删旧子行再 upsert 的 `UpdateData` 网关动作）列旁支。
+- **FASTER 历史行无时间戳审计**：codec 不含 CreatedAt/UpdatedAt 列——历史行的完整时间戳审计以 SqlServer/InMemory 为准（已声明于实现注释）。
+- **FASTER 无事务**：Upsert/DeleteMany 靠"读-校验-写"序列，并发窗口内存在竞态（与第 7 轮单会话语义水位一致）。
+- 软删行的 upsert（复活语义）未定义——当前表现为主键冲突显式失败。
+- 每次全新插入在 UpsertAsync 路径仍有一次点查开销（SELECT 现存行）——更新场景行数少，逐行 CAS 优于 staging 的原型期取舍。
+
+### 未改旁支
+
+测试基建解放（Testcontainers/独立库/并行 CI）、SnapshotUpdate 网关动作（子图替换）、入边级联清理、白皮书 2.0 增补第 20 轮、GitHub 推送（本地领先 4 提交）、SM4、雪花 ID。
+
+---
+
 ## 2026-10-27 第 19 轮（续）：白皮书 2.0——全量版（1–19 轮）
 
 ### 更新内容

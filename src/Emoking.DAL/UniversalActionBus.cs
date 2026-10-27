@@ -218,19 +218,8 @@ public sealed class UniversalActionBus
             pendingDeletes.Add(child.Id);
         }
 
-        // 逐行软删。
-        var deleted = 0;
-
-        // 遍历软删。
-        foreach (var rowId in pendingDeletes)
-        {
-            // 软删命中计数。
-            if (await _store.DeleteAsync(rowId))
-            {
-                // 累计。
-                deleted++;
-            }
-        }
+        // 第 20 轮半修：单事务批量软删——消灭"中途失败留下删了一半的状态"。
+        var deleted = await _store.DeleteManyAsync(pendingDeletes);
 
         // 返回删除行数。
         return deleted;
@@ -341,9 +330,31 @@ public sealed class UniversalActionBus
         var assembled = _gateway.Assemble(subgraph, entityRow.TypeId);
 
         // 万物容器的动态属性不被 System.Text.Json 枚举——转为属性字典视图再返回。
+        // 第 20 轮半修：字典视图补 Id 与 TypeName——通用 API 的返回值必须能自证身份，
+        // agent 拿到它才能发起后续操作（DeleteData/InsertEdge 都需要实体行 Id）。
         return assembled is UniversalObject universalObject
-            ? universalObject.GetProperties()
+            ? BuildSelfDescribingView(universalObject)
             : assembled;
+    }
+
+    /// <summary>
+    /// 构造自描述属性视图——动态属性字典 + 实体行 Id 与类型名。
+    /// </summary>
+    /// <param name="universalObject">组装完成的万物容器。</param>
+    /// <returns>可 JSON 序列化的属性字典（含 Id/TypeName 两个身份键）。</returns>
+    private static Dictionary<string, object?> BuildSelfDescribingView(UniversalObject universalObject)
+    {
+        // 复制属性字典——不污染容器内部状态。
+        var view = new Dictionary<string, object?>(universalObject.GetProperties(), StringComparer.Ordinal);
+
+        // 身份键：实体行 Id。
+        view["Id"] = universalObject.Id;
+
+        // 身份键：实体类型名。
+        view["TypeName"] = universalObject.TypeName;
+
+        // 返回自描述视图。
+        return view;
     }
 
     /// <summary>

@@ -21,20 +21,30 @@ public sealed class InMemoryUniversalStore : IUniversalStore
     private readonly ConcurrentDictionary<Guid, UniversalEntity> _rows = new();
 
     /// <summary>
-    /// 整包写入——逐行放入字典，主键即行 Id。
+    /// 整包写入——纯插入语义：同 Id 行已存在时显式失败。
     /// </summary>
+    /// <remarks>
+    /// 第 20 轮语义对齐：BulkInsert 是纯插入（TryAdd，冲突显式失败），
+    /// 覆盖语义由 <see cref="UpsertAsync"/>（CAS + 历史行）承担。
+    /// </remarks>
     /// <param name="entities">待写入的行集合。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>写入的行数（与输入集合等长）。</returns>
+    /// <exception cref="InvalidOperationException">同 Id 行已存在时抛出。</exception>
     public Task<int> BulkInsertAsync(
         IReadOnlyList<UniversalEntity> entities,
         CancellationToken cancellationToken = default)
     {
-        // 逐行放入字典——同 Id 后写覆盖前写。
+        // 逐行纯插入——TryAdd 失败即同 Id 已存在。
         foreach (var entity in entities)
         {
-            // 主键寻址插入。
-            _rows[entity.Id] = entity;
+            // 主键寻址插入——已存在则显式冲突（不静默覆盖）。
+            if (!_rows.TryAdd(entity.Id, entity))
+            {
+                // 抛出冲突异常。
+                throw new InvalidOperationException(
+                    $"行 {entity.Id} 已存在——BulkInsert 是纯插入语义，覆盖写入请使用 UpsertAsync。");
+            }
         }
 
         // 返回写入行数——同步完成，直接返回已完成任务。
@@ -93,8 +103,10 @@ public sealed class InMemoryUniversalStore : IUniversalStore
                 continue;
             }
 
-            // 属性行命中：ParentId 指向锚点集。
-            if (pair.Value.ParentId is not null && entityIds.Contains(pair.Value.ParentId.Value))
+            // 属性行命中：ParentId 指向锚点集，且非历史行（Role=6 排除）。
+            if (pair.Value.ParentId is not null
+                && entityIds.Contains(pair.Value.ParentId.Value)
+                && pair.Value.Role != UniversalEntity.RoleHistory)
             {
                 // 加入子图。
                 results.Add(pair.Value);
@@ -138,8 +150,8 @@ public sealed class InMemoryUniversalStore : IUniversalStore
         // 遍历字典。
         foreach (var pair in _rows)
         {
-            // 匹配 ParentId 且未删除。
-            if (pair.Value.ParentId == parentId && !pair.Value.IsDeleted)
+            // 匹配 ParentId、未删除、且非历史行（Role=6 排除，防历史污染活数据）。
+            if (pair.Value.ParentId == parentId && !pair.Value.IsDeleted && pair.Value.Role != UniversalEntity.RoleHistory)
             {
                 // 命中。
                 results.Add(pair.Value);
@@ -172,6 +184,121 @@ public sealed class InMemoryUniversalStore : IUniversalStore
 
         // 命中。
         return Task.FromResult(true);
+    }
+
+    /// <summary>
+    /// 条件覆盖写入（CAS upsert）——行不存在则插入；存在则按 Version 乐观锁更新并落历史行。
+    /// </summary>
+    /// <param name="entities">待写入的行集合；更新行必须携带与存储一致的 Version。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终行集合。</returns>
+    /// <exception cref="InvalidOperationException">Version 不匹配或并发抢先时抛出。</exception>
+    public Task<IReadOnlyList<UniversalEntity>> UpsertAsync(
+        IReadOnlyList<UniversalEntity> entities,
+        CancellationToken cancellationToken = default)
+    {
+        // 收集落库后的最终行。
+        var results = new List<UniversalEntity>(entities.Count);
+
+        // 逐行 CAS 处理。
+        foreach (var entity in entities)
+        {
+            // 第 1 步：取现存行（可能为 null）。
+            _rows.TryGetValue(entity.Id, out var existing);
+
+            // 分支一：行不存在或已软删 → TryAdd 纯插入（并发插入冲突显式失败）。
+            if (existing is null || existing.IsDeleted)
+            {
+                // 并发插入竞争——TryAdd 失败即被抢先。
+                if (!_rows.TryAdd(entity.Id, entity))
+                {
+                    // 抛出并发冲突。
+                    throw new InvalidOperationException(
+                        $"并发冲突：行 {entity.Id} 在写入间隙被其他事务插入——请重读后重试。");
+                }
+
+                // 返回输入行。
+                results.Add(entity);
+
+                // 下一行。
+                continue;
+            }
+
+            // 分支二前置校验：Version 快速比对（existing 此处必然非 null 且为活行）。
+            if (existing.Version != entity.Version)
+            {
+                // 抛出乐观锁冲突。
+                throw new InvalidOperationException(
+                    $"乐观锁冲突：行 {entity.Id} 存储版本为 {existing.Version}，请求版本为 {entity.Version}——请重读后重试。");
+            }
+
+            // 第 2 步：构造历史行——Role=6、新 Id、ParentId 指向当前行、其余字段原样保留。
+            var historyRow = existing with
+            {
+                // 历史行 Id 换新。
+                Id = Guid.NewGuid(),
+                // 角色改为历史。
+                Role = UniversalEntity.RoleHistory,
+                // 挂到被更新的当前行下。
+                ParentId = existing.Id
+            };
+
+            // 历史行先入池。
+            _rows.TryAdd(historyRow.Id, historyRow);
+
+            // 第 3 步：构造更新后的行——Version 递增、CreatedAt 保留原始创建时间。
+            var updatedRow = entity with
+            {
+                // 乐观锁版本递增。
+                Version = existing.Version + 1,
+                // 创建时间保留旧行值。
+                CreatedAt = existing.CreatedAt,
+                // 更新时间取当前。
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // 第 4 步：CAS 覆盖——TryUpdate 以旧行为比较基准，失败即被并发抢先。
+            if (!_rows.TryUpdate(entity.Id, updatedRow, existing))
+            {
+                // 抛出并发冲突。
+                throw new InvalidOperationException(
+                    $"并发冲突：行 {entity.Id} 在写入间隙被其他事务更新——请重读后重试。");
+            }
+
+            // 返回落库后的最终行。
+            results.Add(updatedRow);
+        }
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(results);
+    }
+
+    /// <summary>
+    /// 批量软删——进程内逐行软删（内存操作天然原子，无需事务包装）。
+    /// </summary>
+    /// <param name="ids">待软删的行 Id 集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>实际软删的行数。</returns>
+    public async Task<int> DeleteManyAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken = default)
+    {
+        // 累计命中数。
+        var deleted = 0;
+
+        // 逐行软删——内存写入不可半途失败，逐行等价于原子。
+        foreach (var id in ids)
+        {
+            // 命中计数。
+            if (await DeleteAsync(id, cancellationToken))
+            {
+                // 累计。
+                deleted++;
+            }
+        }
+
+        // 返回命中数。
+        return deleted;
     }
 
     /// <summary>

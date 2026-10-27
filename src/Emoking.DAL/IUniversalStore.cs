@@ -74,4 +74,39 @@ public interface IUniversalStore
     Task<bool> DeleteAsync(
         Guid id,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 条件覆盖写入（CAS upsert）——行不存在则插入；存在则按 Version 乐观锁更新。
+    /// </summary>
+    /// <remarks>
+    /// 第 20 轮（洞 2 重做）语义契约，三引擎一致：
+    ///   1. 输入行的 Id 在池中不存在 → 插入（Version 保持输入值）；
+    ///   2. 存在且存储行 Version 等于输入行 Version → 旧行先复制为历史行（Role=6，ParentId 指向当前行，
+    ///      CreatedAt/UpdatedAt/Version 原样保留），再覆盖更新（Version = 旧值 + 1，CreatedAt 保留旧行值）；
+    ///   3. Version 不匹配（含并发抢先）→ 抛 <see cref="InvalidOperationException"/>——
+    ///      并发两写一胜一败，静默覆盖不存在（write 侧乐观锁）。
+    /// 与 <see cref="BulkInsertAsync"/> 的分工：BulkInsert 是纯插入（同 Id 显式失败），
+    /// Upsert 是"在并发下可证明地覆盖，并且留下可审计的过去"。
+    /// </remarks>
+    /// <param name="entities">待写入的行集合；更新行必须携带与存储一致的 Version。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终行集合（Id 不变；更新行 Version 已递增、CreatedAt 为原始创建时间）。</returns>
+    /// <exception cref="InvalidOperationException">Version 不匹配或并发抢先时抛出。</exception>
+    Task<IReadOnlyList<UniversalEntity>> UpsertAsync(
+        IReadOnlyList<UniversalEntity> entities,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 批量软删——单事务原子：集合内全部行要么都删要么都不删。
+    /// </summary>
+    /// <remarks>
+    /// 第 20 轮半修：级联删除（实体 + 子行）从"逐行删"升级为"单事务删"，
+    /// 消灭"中途失败留下删了一半的状态"。
+    /// </remarks>
+    /// <param name="ids">待软删的行 Id 集合；空集合直接返回 0。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>实际软删的行数。</returns>
+    Task<int> DeleteManyAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken = default);
 }
