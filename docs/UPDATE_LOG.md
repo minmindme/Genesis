@@ -1,5 +1,54 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 15 轮：意图总线与哑巴网关——POST /api/genesis 一个入口
+
+### 更新内容
+
+1. `UniversalActionBus`（DAL）：意图总线唯一入口，双路由分发——
+   - action 命中 Role=7 工作流 → `UniversalCommandExecutor`（建类型/模式指令/代理生成/热重载）；
+   - 内置业务动作 `InsertData`（TypeName+Data JSON → 网关拆解落库，快照/图自动分轨，返回实体行 Guid）、`GetData`（EntityId → 组装返回，万物容器转属性字典视图保证 JSON 可序列化）；
+   - 无法识别的动作显式失败。
+2. `MetaCache.GetTypeIdByName`：动作参数里的类型名翻译为 TypeId。
+3. **`Genesis.Gateway`**（ASP.NET Core 最小 API）：整个"后端"只有一个端点 `POST /api/genesis`——请求契约 `{action, args, token}`（token 为 v1 预留字段，**鉴权未实现**，见诚实边界）。
+4. **自愈机制**：网关遇 InvalidOperationException（未注册命令/类型）时自动 `LoadAsync` 热重载并重试一次——池中刚插入的命令/类型无需重启网关即刻可用。
+5. `Genesis.CLI` 改走 ActionBus（CLI 与 HTTP 共用同一总线，壳子更哑）。
+6. `ActionBusTests` 3 个：工作流动作建类型、InsertData/GetData 快照往返、未知动作抛错。
+
+### HTTP 真库冒烟（GenesisIso，Invoke-RestMethod 三连）
+
+```text
+① POST {"action":"CreateEntity","args":{"TypeName":"Product","Props":"Title:String,Price:Decimal","Mode":"Graph"}}
+   → OK（Product 类型 + 2 属性元数据落库，sqlcmd 确认 3 行）
+② POST {"action":"InsertData","args":{"TypeName":"Product","Data":{"Title":"网关商品","Price":42.5}}}
+   → EntityId = 8865687a-...
+③ POST {"action":"GetData","args":{"EntityId":"8865687a-..."}}
+   → {"Price":42.5,"Title":"网关商品"} 完整读回
+全程零 Controller、零 Service、零 Product 相关代码。
+```
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B27 | HTTP 冒烟 CREATE/INSERT 全部 400 | 网关 MetaCache 是**启动快照**，池中新增的 Role=7 命令行/Role=1 类型不自动生效（热重载无触发点） | 网关遇未注册类错误自动 LoadAsync 自愈并重试一次 |
+| B28 | ActionBus 测试 xunit 重载解析 CS1503 / IsType 不匹配 | ExecuteActionAsync 返回 object；Assert.Contains/IsType 推断歧义；InsertData 实际返回 Guid 非 string | 测试断言按真实返回类型收紧（IsType<Guid>/IsType<string>） |
+| B29 | GetData 结果 JSON 不含业务属性 | UniversalObject（DynamicObject）的动态属性不被 System.Text.Json 枚举 | GetData 返回前转属性字典视图 |
+
+### 诚实边界
+
+- token 鉴权未实现（预留字段）；RateLimit 策略未接到网关层；CORS/HTTPS/限流/审计全部未配——本网关是架构演示形态，生产化缺整层安全设施。
+- 未知动作的自愈重试会对每个未知动作做一次 LoadAsync——恶意扫描可用此放大数据库查询（生产需要限流前置）。
+
+### 未改旁支
+
+Role=8 UI 描述、token 鉴权、LLM 意图解析、CQRS 读模型、白皮书 2.0、边删除级联、雪花 ID、SM4。
+
+### 未验证项
+
+Gateway 并发请求；自愈重试的并发放大效应；网关与 PolicyDrivenStore（加密+租户）叠加的端到端。
+
+---
+
 ## 2026-10-27 第 14 轮：同构 CLI——命令树即数据（Role=7）与哑巴壳子
 
 ### 更新内容

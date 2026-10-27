@@ -3,5 +3,6 @@
     <Project Path="src/Emoking.DAL.Tests/Emoking.DAL.Tests.csproj" />
     <Project Path="src/Emoking.DAL/Emoking.DAL.csproj" />
     <Project Path="src/Genesis.CLI/Genesis.CLI.csproj" />
+    <Project Path="src/Genesis.Gateway/Genesis.Gateway.csproj" />
   </Folder>
 </Solution>

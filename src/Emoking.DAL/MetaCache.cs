@@ -487,6 +487,28 @@ public sealed class MetaCache
     }
 
     /// <summary>
+    /// 按类型名查询 TypeId——意图总线把动作名/类型名翻译为类型指针的入口。
+    /// </summary>
+    /// <param name="typeName">实体类型名（如 "Order"）。</param>
+    /// <returns>类型行 Id；未注册返回 null。</returns>
+    public Guid? GetTypeIdByName(string typeName)
+    {
+        // 遍历类型缓存按名匹配。
+        foreach (var metaType in _types.Values)
+        {
+            // 名称命中。
+            if (string.Equals(metaType.TypeName, typeName, StringComparison.Ordinal))
+            {
+                // 返回 TypeId。
+                return metaType.TypeId;
+            }
+        }
+
+        // 未注册。
+        return null;
+    }
+
+    /// <summary>
     /// 解析 Role=7 CLI 命令行——命令名 → 键值对集合。
     /// </summary>
     /// <param name="rows">Role=7 行集合。</param>
