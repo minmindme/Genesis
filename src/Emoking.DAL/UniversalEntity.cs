@@ -49,4 +49,9 @@ public sealed record UniversalEntity(
     /// 角色常量：Security 安全策略（加密、租户隔离、限流等规则数据）。
     /// </summary>
     public const byte RoleSecurity = 5;
+
+    /// <summary>
+    /// 角色常量：Command CLI 命令与工作流定义（命令树即数据）。
+    /// </summary>
+    public const byte RoleCommand = 7;
 }

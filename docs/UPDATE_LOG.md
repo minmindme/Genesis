@@ -1,5 +1,49 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 14 轮：同构 CLI——命令树即数据（Role=7）与哑巴壳子
+
+### 更新内容
+
+1. `UniversalEntity.RoleCommand = 7`：CLI 命令与工作流定义成为池中数据。
+2. `MetaCache`：LoadAsync 拉取 Role=7 → `GetCommand(name)` / `GetCommandNames()`；元常量 `MetaTypeTypeId`/`MetaEngineTypeId` 公开化（CLI 工作流复用）。
+3. `UniversalCommandExecutor`：匹配 Role=7 定义 → 按 `Steps` 编排执行内置原子步骤注册表（**步骤是插件、编排是数据**，与 PolicyDrivenStore 同一哲学）：
+   - `InsertTypeMeta`（类型行 + 属性行）、`SetStorageMode`、`BindCSharpType`、`GenerateProxy`（强类型 .cs 生成）、`ReloadCache`（热重载）。
+   - 未注册命令/未注册步骤/缺参数全部显式抛错。
+4. 新增 `Genesis.CLI` 控制台项目（哑巴壳子）：无参打印池中命令表，`run <命令> K=V...` 执行工作流。
+5. `CommandExecutorTests` 3 个：工作流全闭环（元数据落库 + Snapshot 指令 + 代理文件三属性）、未知命令抛错、未知步骤抛错。
+
+### CLI 真库冒烟（GenesisIso）
+
+```text
+① sqlcmd 插入一行 Role=7：Command=CreateEntity|Args=...|Steps=InsertTypeMeta;SetStorageMode;GenerateProxy;ReloadCache
+② genesis（无参）→ 动态渲染命令表：CreateEntity  Args: ...  Steps: ...
+③ genesis run CreateEntity TypeName=SmokeOrder Props=OrderNo:String,Amount:Decimal Mode=Snapshot ...
+   → 4 步骤执行、4 行元数据落库（sqlcmd 确认 SmokeOrder 类型行 + StorageMode=Snapshot 指令 + 2 属性行）
+   → SmokeOrder.cs 强类型代理生成
+   → MetaCache 热重载完成
+```
+
+### 格式契约（重要）
+
+Role=7 行的键值对分隔符是 `|`，**Steps 内的步骤分隔符是 `;`**——`Steps=A|B` 会因 B 无 `=` 被键值解析器静默吞掉（B25 根因）。
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B25 | 多步骤工作流只有第一个步骤执行 | Steps 用 `|` 分隔与键值对分隔符冲突，后续步骤名因无 `=` 被静默丢弃 | Steps 分隔符改 `;`（格式契约已文档化） |
+| B26 | 代理生成 UnauthorizedAccess | %TEMP% 子目录沙箱拒绝（同 B13） | 测试临时目录改 AppContext.BaseDirectory |
+
+### 未改旁支
+
+LLM 自然语言解析（Mock 接口）、复杂参数解析、代理模板定制、边删除级联、100K 压测已在第 13 轮完成、白皮书 2.0、雪花 ID。
+
+### 未验证项
+
+Role=7 命令行的并发执行；GenerateProxy 与已存在文件的覆盖策略（当前直接覆盖）；LLM 接入后的参数映射准确性。
+
+---
+
 ## 2026-10-27 第 13 轮：Edge 同构——消灭 Role=3，索引即数据（双向边）+ 100K 混合压测
 
 ### 更新内容

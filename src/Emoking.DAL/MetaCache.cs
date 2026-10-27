@@ -67,11 +67,11 @@ public sealed class MetaEngine
 /// </summary>
 public sealed class MetaCache
 {
-    // 元类型 Guid——"实体类型定义"这类行自身的 TypeId 指针。
-    private static readonly Guid MetaTypeTypeId = new("00000000-0000-0000-0000-000000000001");
+    // 元类型 Guid——"实体类型定义"这类行自身的 TypeId 指针（CLI 工作流等外部组件复用）。
+    public static readonly Guid MetaTypeTypeId = new("00000000-0000-0000-0000-000000000001");
 
     // 引擎指令类型 Guid——"引擎指令"这类行自身的 TypeId 指针。
-    private static readonly Guid MetaEngineTypeId = new("00000000-0000-0000-0000-000000000002");
+    public static readonly Guid MetaEngineTypeId = new("00000000-0000-0000-0000-000000000002");
 
     // User 实体类型的固定 Guid——种子行 Id 与实例行 TypeId 都用它。
     private static readonly Guid UserTypeId = new("11111111-1111-1111-1111-111111111111");
@@ -98,6 +98,9 @@ public sealed class MetaCache
 
     // 安全策略缓存：策略名 → 键值对集合（Role=5 解析结果）。
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _securityPolicies = new(StringComparer.Ordinal);
+
+    // CLI 命令缓存：命令名 → 键值对集合（Role=7 解析结果）。
+    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _commands = new(StringComparer.Ordinal);
 
     // 实体类型缓存：TypeId → MetaType
     private readonly ConcurrentDictionary<Guid, MetaType> _types = new();
@@ -134,6 +137,7 @@ public sealed class MetaCache
         _types.Clear();
         _engines.Clear();
         _securityPolicies.Clear();
+        _commands.Clear();
         _storageProviderName = null;
 
         // 一次性拉取全部 Role=1 与 Role=4 行——安全策略（Role=5）按需增量拉取，见下方。
@@ -144,6 +148,11 @@ public sealed class MetaCache
         // 一次性拉取全部 Role=5 安全策略行。
         var policyRows = await _repository.GetByRolesAsync(
             [UniversalEntity.RoleSecurity],
+            cancellationToken);
+
+        // 一次性拉取全部 Role=7 CLI 命令行。
+        var commandRows = await _repository.GetByRolesAsync(
+            [UniversalEntity.RoleCommand],
             cancellationToken);
 
         // 没有任何元数据行说明数据池是空的——执行创世播种。
@@ -168,6 +177,9 @@ public sealed class MetaCache
 
         // 解析安全策略行。
         ParseSecurityPolicies(policyRows);
+
+        // 解析 CLI 命令行。
+        ParseCommands(commandRows);
     }
 
     /// <summary>
@@ -472,6 +484,51 @@ public sealed class MetaCache
 
         // 未注册的边类型。
         return null;
+    }
+
+    /// <summary>
+    /// 解析 Role=7 CLI 命令行——命令名 → 键值对集合。
+    /// </summary>
+    /// <param name="rows">Role=7 行集合。</param>
+    private void ParseCommands(IReadOnlyList<UniversalEntity> rows)
+    {
+        // 逐行解析。
+        foreach (var row in rows)
+        {
+            // 解析键值对——与引擎指令同格式。
+            var settings = ParseEngineCommand(row.Value);
+
+            // 缺 Command 键的行视为非法，跳过。
+            if (!settings.TryGetValue("Command", out var commandName) || string.IsNullOrWhiteSpace(commandName))
+            {
+                // 跳过非法命令行。
+                continue;
+            }
+
+            // 以命令名为键缓存。
+            _commands[commandName] = settings;
+        }
+    }
+
+    /// <summary>
+    /// 按命令名查询 CLI 命令定义——命令树即数据的唯一读取入口。
+    /// </summary>
+    /// <param name="commandName">命令名。</param>
+    /// <returns>命令定义键值对（Command/Args/Steps）；未注册返回 null。</returns>
+    public IReadOnlyDictionary<string, string>? GetCommand(string commandName)
+    {
+        // 从命令缓存取值。
+        return _commands.TryGetValue(commandName, out var settings) ? settings : null;
+    }
+
+    /// <summary>
+    /// 列出池中全部已注册的 CLI 命令名。
+    /// </summary>
+    /// <returns>命令名集合（无序）。</returns>
+    public IReadOnlyCollection<string> GetCommandNames()
+    {
+        // 导出命令名。
+        return _commands.Keys.ToList();
     }
 
     /// <summary>
