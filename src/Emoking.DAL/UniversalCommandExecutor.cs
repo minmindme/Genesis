@@ -64,7 +64,10 @@ public sealed class UniversalCommandExecutor
             ["GenerateProxy"] = GenerateProxyAsync,
 
             // 元数据热重载。
-            ["ReloadCache"] = ReloadCacheAsync
+            ["ReloadCache"] = ReloadCacheAsync,
+
+            // 一把导入整套系统定义（实体 + 边类型 + UI）——终局演示步骤。
+            ["ImportSystem"] = ImportSystemAsync
         };
     }
 
@@ -266,6 +269,221 @@ public sealed class UniversalCommandExecutor
 
         // 记录。
         context.PendingRows.Add(instructionRow);
+    }
+
+    /// <summary>
+    /// 步骤：ImportSystem——解析系统定义 JSON，一把生成"实体 + 边类型 + UI"全套元数据行。
+    /// </summary>
+    /// <remarks>
+    /// SystemJson 三段式契约：
+    ///   Entities: [{ Name, Mode, Props }]（Props 为 "字段:类型" 逗号串；Mode 非 Graph 时生成 StorageMode 指令）
+    ///   EdgeTypes: [{ Name, From, To }]（自动生成正向 + 反向两个类型行与 EdgeType 指令行）
+    ///   Uis: [{ Name, Entity, Fields, Action }]（Role=8 通用渲染器描述）
+    /// </remarks>
+    /// <param name="context">步骤上下文。</param>
+    private async Task ImportSystemAsync(StepContext context)
+    {
+        // 取系统定义 JSON。
+        var systemJson = RequireArg(context, "SystemJson");
+
+        // 反序列化——属性名大小写不敏感。
+        var definition = System.Text.Json.JsonSerializer.Deserialize<SystemDefinition>(systemJson, new System.Text.Json.JsonSerializerOptions
+        {
+            // 大小写不敏感。
+            PropertyNameCaseInsensitive = true
+        });
+
+        // 定义非法时失败。
+        if (definition is null)
+        {
+            // 抛出异常。
+            throw new InvalidOperationException("SystemJson 不是合法的系统定义 JSON。");
+        }
+
+        // 类型名 → TypeId 映射——供边类型的 From/To 与 UI 的 Entity 引用。
+        var typeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+
+        // 第一段：实体。
+        foreach (var entity in definition.Entities ?? new List<EntityDef>())
+        {
+            // 类型行 Id。
+            var typeId = Guid.NewGuid();
+
+            // 记录映射。
+            typeIds[entity.Name] = typeId;
+
+            // 类型行。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: typeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: entity.Name));
+
+            // 属性行——"字段:类型" 格式（DataType 显式化）。
+            foreach (var propSpec in (entity.Props ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                // 跳过空属性。
+                if (propSpec.Length == 0)
+                {
+                    // 跳过。
+                    continue;
+                }
+
+                // 属性行。
+                context.PendingRows.Add(new UniversalEntity(
+                    Id: Guid.NewGuid(),
+                    TypeId: MetaCache.MetaTypeTypeId,
+                    Role: UniversalEntity.RoleMeta,
+                    ParentId: typeId,
+                    Value: propSpec));
+            }
+
+            // 存储模式指令——非 Graph 模式时生成。
+            if (!string.IsNullOrEmpty(entity.Mode) && !string.Equals(entity.Mode, "Graph", StringComparison.OrdinalIgnoreCase))
+            {
+                // 指令行。
+                context.PendingRows.Add(new UniversalEntity(
+                    Id: Guid.NewGuid(),
+                    TypeId: MetaCache.MetaEngineTypeId,
+                    Role: UniversalEntity.RoleEngine,
+                    ParentId: null,
+                    Value: $"StorageMode={entity.Mode}|TargetTypeId={typeId}"));
+            }
+        }
+
+        // 第二段：边类型——正向 + 反向两个类型行与两条 EdgeType 指令行。
+        foreach (var edge in definition.EdgeTypes ?? new List<EdgeTypeDef>())
+        {
+            // From/To 实体必须已定义。
+            if (!typeIds.TryGetValue(edge.From, out var fromTypeId) || !typeIds.TryGetValue(edge.To, out var toTypeId))
+            {
+                // 抛出引用异常。
+                throw new InvalidOperationException(
+                    $"边类型 '{edge.Name}' 引用的实体 '{edge.From}'/'{edge.To}' 未在 Entities 段定义。");
+            }
+
+            // 正向类型行 Id。
+            var forwardTypeId = Guid.NewGuid();
+
+            // 反向类型行 Id——命名约定：名称 + "By"。
+            var reverseTypeId = Guid.NewGuid();
+            var reverseName = edge.Name + "By";
+
+            // 正向类型行。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: forwardTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: edge.Name));
+
+            // 反向类型行。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: reverseTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: reverseName));
+
+            // 正向 EdgeType 指令。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleEngine,
+                ParentId: null,
+                Value: $"EdgeType={edge.Name}|TargetTypeId={forwardTypeId}"));
+
+            // 反向 EdgeType 指令。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleEngine,
+                ParentId: null,
+                Value: $"EdgeType={reverseName}|TargetTypeId={reverseTypeId}"));
+
+            // 记录正反向 TypeId——InsertEdge 按名称约定查找。
+            typeIds[edge.Name] = forwardTypeId;
+            typeIds[reverseName] = reverseTypeId;
+        }
+
+        // 第三段：UI Schema。
+        foreach (var ui in definition.Uis ?? new List<UiDef>())
+        {
+            // Role=8 行。
+            context.PendingRows.Add(new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleUi,
+                ParentId: null,
+                Value: $"UI={ui.Name}|Type=Form|Entity={ui.Entity}|Fields={ui.Fields}|Action={ui.Action}"));
+        }
+
+        // 整包落库。
+        await _repository.InsertBatchAsync(context.PendingRows);
+    }
+
+    /// <summary>
+    /// 系统定义 DTO——ImportSystem 的 JSON 契约。
+    /// </summary>
+    private sealed class SystemDefinition
+    {
+        /// <summary>实体定义列表。</summary>
+        public List<EntityDef>? Entities { get; set; }
+
+        /// <summary>边类型定义列表。</summary>
+        public List<EdgeTypeDef>? EdgeTypes { get; set; }
+
+        /// <summary>UI 定义列表。</summary>
+        public List<UiDef>? Uis { get; set; }
+    }
+
+    /// <summary>
+    /// 实体定义——名称、存储模式、属性规格。
+    /// </summary>
+    private sealed class EntityDef
+    {
+        /// <summary>实体类型名。</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>存储模式（Snapshot/Graph）。</summary>
+        public string? Mode { get; set; }
+
+        /// <summary>属性规格串（"字段:类型" 逗号分隔）。</summary>
+        public string? Props { get; set; }
+    }
+
+    /// <summary>
+    /// 边类型定义——名称与两端实体。
+    /// </summary>
+    private sealed class EdgeTypeDef
+    {
+        /// <summary>边类型名。</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>起点实体名。</summary>
+        public string From { get; set; } = string.Empty;
+
+        /// <summary>终点实体名。</summary>
+        public string To { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// UI 定义——名称、实体、字段、提交动作。
+    /// </summary>
+    private sealed class UiDef
+    {
+        /// <summary>UI 名。</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>指向的实体名。</summary>
+        public string Entity { get; set; } = string.Empty;
+
+        /// <summary>字段规格串。</summary>
+        public string Fields { get; set; } = string.Empty;
+
+        /// <summary>提交动作名。</summary>
+        public string Action { get; set; } = "InsertData";
     }
 
     /// <summary>

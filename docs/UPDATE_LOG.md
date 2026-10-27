@@ -1,5 +1,50 @@
 # Genesis 更新日志
 
+## 2026-10-27 第 18 轮：终局演示——ImportSystem 一发建出"学生管理系统"
+
+### 更新内容
+
+1. `UniversalCommandExecutor` 注册 `ImportSystem` 步骤 + `SystemDefinition` JSON 契约（三段式）：
+   - `Entities: [{Name, Mode, Props}]`——类型行 + 属性行（Name:Type 格式）+ 非 Graph 模式的 StorageMode 指令；
+   - `EdgeTypes: [{Name, From, To}]`——自动生成**正向 + 反向**两个类型行与两条 EdgeType 指令（反向命名约定：名称 + "By"）；
+   - `Uis: [{Name, Entity, Fields, Action}]`——Role=8 通用渲染器描述。
+   引用未定义实体的边类型显式失败。
+2. `UniversalActionBus` 内置 `InsertEdge`：按边类型名查正/反向 TypeId（命名约定 Name/Name+"By"），`Gateway.CreateEdge` 双向落库，Props JSON 可选。
+3. `ImportSystemTests` 2 个：一发建出学生管理系统全闭环（导入 → Schema 验证 → 灌学生/班级 → InsertEdge 双向边）、引用未定义实体抛错。
+
+### HTTP 真库冒烟（GenesisIso）
+
+```text
+① sqlcmd 插一行 Role=7：Command=ImportSystem|Args=SystemJson|Steps=ImportSystem;ReloadCache
+② POST ImportSystem（一段 JSON：Student 图模式 + ClassRoom 快照 + StudiesIn 边 + StudentForm UI）
+   → "命令执行完成：2 个步骤，生成 11 行元数据"
+③ POST GetSystemSchema → Uis 含 StudentForm
+④ POST InsertData Student{张小明,12} → EntityId 落库
+sqlcmd 终验：SchoolRows = 7（2 类型行 + 3 属性行 + 边类型 2 行 或 UI 行）
+```
+
+**一句话建系统闭环**：一段 JSON → ImportSystem → 浏览器 StudentForm 可用 → InsertData/InsertEdge 灌数据 → 图遍历可查——**全程零代码、零编译、零重启**。
+
+### 格式契约补充
+
+- ImportSystem 的 SystemJson 是**字符串参数**（内嵌 JSON 需转义引号）——HTTP 冒烟脚本首次因"嵌成对象而非字符串"返回 400（脚本错误非产品缺陷，B34 已记录）。
+
+### BUG 记录
+
+| BUG | 现象 | 根因 | 修复方式 |
+|---|---|---|---|
+| B34 | HTTP 冒烟 ImportSystem 400 | 冒烟脚本把 SystemJson 嵌为 JSON 对象，模型绑定 Dictionary<string,string> 失败 | 脚本转义修正（产品无缺陷） |
+
+### 未改旁支
+
+边删除级联（入边清理）、ImportSystem 原子事务、系统导出（ExportSystem）、token 哈希、白皮书 2.0、GitHub 推送、雪花 ID、SM4。
+
+### 未验证项
+
+多系统导入的名称冲突；ImportSystem 大定义（百实体）性能；UI Schema 与实体属性行的一致性校验（UI Fields vs Props）。
+
+---
+
 ## 2026-10-27 第 17 轮：工业级加固——Token 鉴权、DataType 显式化、级联删除、自愈冷却
 
 ### 更新内容

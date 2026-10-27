@@ -29,6 +29,9 @@ public sealed class UniversalActionBus
     // 内置业务动作：级联软删实体行及其全部子行（属性、出边）。
     public const string DeleteDataAction = "DeleteData";
 
+    // 内置业务动作：创建同构双向边（按边类型名查正反向 TypeId）。
+    public const string InsertEdgeAction = "InsertEdge";
+
     // 元数据缓存。
     private readonly MetaCache _metaCache;
 
@@ -107,10 +110,68 @@ public sealed class UniversalActionBus
             // 级联软删。
             DeleteDataAction => await DeleteDataAsync(args),
 
+            // 创建双向边。
+            InsertEdgeAction => await InsertEdgeAsync(args),
+
             // 无法识别的动作。
             _ => throw new InvalidOperationException(
-                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}）。")
+                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}/{InsertEdgeAction}）。")
         };
+    }
+
+    /// <summary>
+    /// 创建双向边——按边类型名查正/反向 TypeId（命名约定：反向名 = 正向名 + "By"），落库 2 行。
+    /// </summary>
+    /// <param name="args">参数：FromId、ToId、EdgeType（边类型名）、Props（可选 JSON）。</param>
+    /// <returns>落库的行数（恒为 2）。</returns>
+    private async Task<object> InsertEdgeAsync(IReadOnlyDictionary<string, string> args)
+    {
+        // 取起点实体 Id。
+        var fromIdText = RequireArg(args, "FromId");
+
+        // 取终点实体 Id。
+        var toIdText = RequireArg(args, "ToId");
+
+        // 取边类型名。
+        var edgeTypeName = RequireArg(args, "EdgeType");
+
+        // 解析 Guid。
+        if (!Guid.TryParse(fromIdText, out var fromId) || !Guid.TryParse(toIdText, out var toId))
+        {
+            // 抛出格式异常。
+            throw new InvalidOperationException("FromId/ToId 必须是合法的 Guid。");
+        }
+
+        // 按命名约定解析正反向 TypeId——ImportSystem 生成边类型时自动创建反向类型行（名 + "By"）。
+        var forwardTypeId = _metaCache.GetTypeIdByName(edgeTypeName);
+        var reverseTypeId = _metaCache.GetTypeIdByName(edgeTypeName + "By");
+
+        // 任一缺失即失败。
+        if (forwardTypeId is null || reverseTypeId is null)
+        {
+            // 抛出异常。
+            throw new InvalidOperationException(
+                $"边类型 '{edgeTypeName}'/'{edgeTypeName}By' 未在池中注册——请先通过 ImportSystem 定义它。");
+        }
+
+        // 解析边属性（可选 JSON）。
+        Dictionary<string, object?>? props = null;
+
+        // Props 存在时反序列化。
+        if (args.TryGetValue("Props", out var propsJson) && !string.IsNullOrWhiteSpace(propsJson))
+        {
+            // 反序列化。
+            props = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(propsJson);
+        }
+
+        // 网关生成双向行。
+        var edgeRows = _gateway.CreateEdge(fromId, forwardTypeId.Value, reverseTypeId.Value, toId, props);
+
+        // 落库。
+        await _store.BulkInsertAsync(edgeRows);
+
+        // 返回行数。
+        return edgeRows.Count;
     }
 
     /// <summary>
