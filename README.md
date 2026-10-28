@@ -2,7 +2,7 @@
 
 > **一生二，二生三，三生万物。** 一张表、一种行结构，生长出任何业务形态——元数据、引擎指令、安全策略、命令树、前端界面，全部是池中数据。
 
-[![License](https://img.shields.io/badge/license-private-red)](LICENSE)
+[![License](https://img.shields.io/badge/license-attribution-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-81%20passed-brightgreen)](docs/UPDATE_LOG.md)
 [![Build](https://img.shields.io/badge/build-0%20warning%200%20error-blue)](#快速开始)
 
@@ -76,4 +76,4 @@ Genesis 的每一句"理论上"都必须变成表格里的实测数字——白�
 
 ## 许可
 
-**私人使用许可**——允许个人学习、研究与非公开环境运行；**禁止一切商业使用与再分发**。见 [LICENSE](LICENSE)。商业授权请通过仓库 Issue 联系作者。
+**署名许可（允许商用）**——**永久、全球、免版税**，明确允许商业使用（含生产部署与闭源集成）；**唯一核心义务是署名**：您的产品/项目须显著注明"基于 Genesis 同构数据引擎（© 2026 minmindme）"并链接本仓库，修改件须标注"基于 Genesis 修改"。禁止移除署名与虚假背书。见 [LICENSE](LICENSE)。
