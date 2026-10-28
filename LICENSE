@@ -1,8 +1,12 @@
-# Genesis 同构数据引擎 私人使用许可协议
-# Genesis Isomorphic Data Engine — Private Use License Agreement
+# Genesis 同构数据引擎 最终用户许可协议
+# Genesis Isomorphic Data Engine — End User License Agreement (EULA)
 
-> 生效日期 / Effective Date：2026-10-28 ｜ 版本 / Version：2.0
-> 版权所有 © 2026 minmindme（《Genesis》项目作者，下称"作者"）/ Copyright © 2026 minmindme (the author of the "Genesis" project, hereinafter the "Author"). 保留所有权利 / All rights reserved.
+> 最后修订 / Last Revised：2026-10-28 ｜ 版本 / Version：3.0
+> 版权所有 © 2026 minmindme（《Genesis》项目作者，下称"作者"或"本软件"）/ Copyright © 2026 minmindme (the author of the "Genesis" project, hereinafter the "Author" or "the Software"). 保留所有权利 / All rights reserved.
+
+> **接受即生效**：在您下载、克隆、编译、安装、运行或以任何方式使用本软件之前，请务必仔细阅读本协议的全部条款。**一旦您使用本软件或其提供的任何服务，即表示您无条件接受本协议的全部条款**，您与本软件之间的合同关系自动成立。若您对本协议的任何条款有异议，您唯一的救济是立即停止使用并删除本软件的全部副本。
+>
+> **ACCEPTANCE**: Before downloading, cloning, compiling, installing, running, or otherwise using the Software, you must carefully read all terms of this Agreement. **By using the Software or any service it provides, you unconditionally accept all terms of this Agreement**, and a contractual relationship between you and the Software is automatically established. If you disagree with any term, your sole remedy is to immediately cease use and destroy all copies of the Software.
 
 ---
 
@@ -10,35 +14,58 @@
 
 **本软件**：指以本仓库（https://github.com/minmindme/Genesis）形式发布的 Genesis 同构数据引擎的全部内容及其后续版本，包括但不限于：源代码、构建产物、文档（白皮书、更新日志、语义规格、展示页）、SQL 脚本、测试用例、前端资产、图标与文本。
 
-**THE SOFTWARE**: The entire contents of the Genesis Isomorphic Data Engine as published in this repository (https://github.com/minmindme/Genesis) and any subsequent versions, including but not limited to: source code, build artifacts, documentation (whitepaper, update log, semantic specification, showcase), SQL scripts, test cases, front-end assets, icons, and text.
+**THE SOFTWARE**: The entire contents of the Genesis Isomorphic Data Engine as published in this repository (https://github.com/minmindme/Genesis) and any subsequent versions, including but not limited to: source code, build artifacts, documentation, SQL scripts, test cases, front-end assets, icons, and text.
 
 **商业使用**：任何直接或间接以营利为目的的使用，包括但不限于：将本软件或其任何部分集成、嵌入、链接至任何营利性产品或服务；在商业环境（含公司内部生产系统）中部署；用于付费咨询、外包交付、培训材料或任何产生经济收益的场景。
 
-**Commercial Use**: Any direct or indirect use for profit, including but not limited to: integrating, embedding, or linking the Software or any part thereof into any for-profit product or service; deploying it in a commercial environment (including internal production systems of companies); using it for paid consulting, contracted deliverables, training materials, or any scenario that generates economic benefit.
+**Commercial Use**: Any direct or indirect use for profit, including but not limited to: integrating, embedding, or linking the Software into any for-profit product or service; deploying it in a commercial environment (including internal production systems of companies); using it for paid consulting, contracted deliverables, training materials, or any scenario generating economic benefit.
+
+**用户内容**：您通过本软件发表、上传、写入、存储或转载的任何数据与内容，包括但不限于：业务数据、文本、结构、指令与配置。
+
+**User Content**: Any data and content you publish, upload, write, store, or repost through the Software, including but not limited to business data, text, structures, instructions, and configurations.
 
 ---
 
-## 二、授权范围 / 2. Grant of License
+## 二、恪守承诺 / 2. Commitments and Lawful Use
 
-在**严格遵守本协议全部条款**的前提下，作者授予你非独占的、不可转让的、不可再授权的、**可随时撤销的**有限许可，仅限于：
+您以任何方式使用本软件及其服务与数据的过程中，不得以任何方式直接或间接从事违反**中华人民共和国法律以及社会公德**的行为，且您应当恪守下列承诺：
 
-Subject to **strict compliance with all terms of this Agreement**, the Author grants you a non-exclusive, non-transferable, non-sublicensable, **revocable at any time**, limited license, solely for:
+In the course of using the Software, its services, and data in any manner, you must not, directly or indirectly, engage in any act violating the **laws of the People's Republic of China or public morals**, and you shall abide by the following commitments:
 
-1. **个人学习与研究**：为本人的技术学习、研究与评估目的查看、编译和运行本软件；
-   **Personal study and research**: to view, compile, and run the Software for your own technical learning, research, and evaluation;
+1. 发表、上传或写入的内容必须符合中国法律与社会公德——**不得发布涉政、涉黄、涉暴或任何违法有害内容**；
+   Content you publish, upload, or write must comply with Chinese law and public morals — **no politically sensitive, pornographic, violent, or otherwise unlawful or harmful content**;
+2. 不得干扰、损害和侵犯本软件的各项合法权利与利益——**包括但不限于盗版、逆向规避、破解或未授权商用**；
+   Do not interfere with, harm, or infringe the lawful rights and interests of the Software — **including but not limited to piracy, reverse circumvention, cracking, or unauthorized commercial use**;
+3. 不得干扰、损害和侵犯他人的各项合法权利与利益——**不得写入或转载未经他人授权的内容**；
+   Do not interfere with, harm, or infringe the lawful rights and interests of others — **no writing or reposting of content without proper authorization**;
+4. 遵守本软件附带的其他协议、指导原则与管理细则——**若附带的开源组件另有许可证，则需一并遵循**；
+   Comply with any other agreements, guidelines, and policies accompanying the Software — **including the licenses of bundled open-source components**;
+5. 对于违反上述条款的内容与行为，作者**有权予以删除**，并**保留移交司法机关处理的权利**。
+   For content and acts violating the above, the Author **reserves the right to delete** such content and **to refer the matter to judicial authorities**.
+
+---
+
+## 三、授权范围 / 3. Grant of License
+
+在**严格遵守本协议全部条款**的前提下，作者授予您非独占的、不可转让的、不可再授权的、**可随时撤销的**有限许可，仅限于：
+
+Subject to **strict compliance with all terms**, the Author grants you a non-exclusive, non-transferable, non-sublicensable, **revocable at any time**, limited license, solely for:
+
+1. **个人学习与研究**：为您本人的技术学习、研究与评估目的查看、编译和运行本软件；
+   **Personal study and research**: to view, compile, and run the Software for your own learning, research, and evaluation;
 2. **非公开环境运行**：在个人非公开、非商业的环境中运行本软件；
    **Non-public execution**: to run the Software in a personal, non-public, non-commercial environment;
-3. **本地修改（仅限自用）**：为本人的上述目的对源代码进行修改；修改件**仅限你本人使用**，不得以任何形式发布、共享或部署给任何第三方；
-   **Local modification (self-use only)**: to modify the source code for the purposes above; such modifications are **for your own use only** and must not be published, shared, or deployed to any third party in any form.
+3. **本地修改（仅限自用）**：为上述目的对源代码进行修改；修改件**仅限您本人使用**，不得以任何形式发布、共享或部署给任何第三方。
+   **Local modification (self-use only)**: to modify the source code for the purposes above; modifications are **for your own use only** and must not be published, shared, or deployed to any third party.
 
-**未在本协议中明确授予的一切权利，均由作者保留。**
-**All rights not expressly granted herein are reserved by the Author.**
+**本软件自由且免费用于上述许可范围；未在本协议中明确授予的一切权利，均由作者保留。**
+**The Software is free of charge within the licensed scope above; all rights not expressly granted herein are reserved by the Author.**
 
 ---
 
-## 三、禁止条款 / 3. Prohibited Uses
+## 四、禁止条款 / 4. Prohibited Uses
 
-未经作者**事先书面许可**，你不得：
+未经作者**事先书面许可**，您不得：
 
 **Without the Author's prior written permission, you must not:**
 
@@ -47,70 +74,113 @@ Subject to **strict compliance with all terms of this Agreement**, the Author gr
 2. **再分发 / Redistribution**——复制、出售、出租、出借、托管、镜像、分发、转授权，或以任何形式（含云服务、SaaS、打包发行）向任何第三方提供本软件或其修改件、衍生件；指向本仓库公开链接的单纯引用不在此列；
    Redistribute—copy, sell, rent, lend, host, mirror, distribute, sublicense, or provide the Software, its modifications, or derivatives to any third party in any form (including cloud services, SaaS, or packaged releases); a mere hyperlink to this public repository is exempt;
 3. **移除或篡改声明 / Removal of Notices**——删除、遮盖或篡改本软件中的版权声明、许可文本、作者署名或任何所有权标识；
-   Remove, obscure, or alter any copyright notice, license text, author attribution, or proprietary mark contained in the Software;
+   Remove, obscure, or alter any copyright notice, license text, author attribution, or proprietary mark;
 4. **虚假背书 / False Endorsement**——以作者名义为任何衍生作品、产品或服务进行宣传或背书；
    Use the Author's name to endorse or promote any derivative work, product, or service;
 5. **规避技术措施 / Circumvention**——规避或协助规避本软件中的鉴权、加密、租户隔离等保护机制；
-   Circumvent, or assist others in circumventing, any authentication, encryption, or tenant-isolation mechanism in the Software;
-6. **违法使用 / Unlawful Use**——将本软件用于任何违反适用法律的用途。
-   Use the Software for any purpose prohibited by applicable law.
+   Circumvent, or assist others in circumventing, any authentication, encryption, or tenant-isolation mechanism;
+6. **超出授权范围 / Beyond Scope**——进行本协议第二、三节未明示许可的任何其他使用。
+   Engage in any use not expressly licensed under Sections 2 and 3.
 
 ---
 
-## 四、第三方组件 / 4. Third-Party Components
+## 五、用户内容 / 5. User Content
 
-本软件依赖的第三方开源组件（包括但不限于 Microsoft FASTER KV、xUnit、Microsoft.Data.SqlClient）各自受其原始许可证约束。本协议仅约束 Genesis 项目的原创内容，不影响上述组件的既有授权，亦不构成作者对任何第三方组件的担保。
-
-Third-party open-source components bundled with or referenced by the Software (including but not limited to Microsoft FASTER KV, xUnit, and Microsoft.Data.SqlClient) remain governed by their respective original licenses. This Agreement governs only the original content of the Genesis project; it neither alters those licenses nor constitutes any warranty by the Author regarding any third-party component.
-
----
-
-## 五、免责声明 / 5. Disclaimer of Warranty
-
-**本软件按"现状"提供，不附带任何形式的明示、默示或法定担保**——包括但不限于适销性、特定用途适用性、不侵权及准确性的担保。你自行承担使用本软件的全部风险。
-
-**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND ACCURACY. YOU ASSUME THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE.**
+1. **内容责任全归用户**：您通过本软件提供的用户内容**仅代表您个人的立场与观点**，与作者无关。本软件仅为用户内容提供存储空间与技术通道，**没有义务审查其出处、真实性、合法性**；
+   **Sole responsibility of the user**: User Content provided through the Software **represents only your personal views** and is unrelated to the Author. The Software merely provides storage space and a technical channel for User Content, and **has no obligation to verify its origin, authenticity, or legality**;
+2. **纠纷免责**：因您提供的用户内容引发的一切纠纷、投诉与法律责任，**由您自行承担**，本软件不承担任何责任；
+   **Disclaimers for disputes**: Any dispute, complaint, or liability arising from your User Content shall be **borne solely by you**; the Software bears no responsibility whatsoever;
+3. **侵权处理**：个人或组织如认为本软件中存在侵犯其自身权益的内容，应**及时联系作者**并提供充分证据；经核实后，作者将**迅速做出删除等处理**；
+   **Infringement handling**: Any individual or organization who believes content in the Software infringes their rights should **promptly contact the Author** with sufficient evidence; upon verification, the Author will **promptly remove** such content;
+4. **违法内容处置**：对于违反本协议第二条的内容，作者有权立即删除，并**保留移交司法机关处理的权利**。
+   **Unlawful content**: For content violating Section 2, the Author may delete it immediately and **reserves the right to refer the matter to judicial authorities**.
 
 ---
 
-## 六、责任限制 / 6. Limitation of Liability
+## 六、免责声明 / 6. Disclaimer of Warranty
 
-在任何情况下，对于因使用、无法使用本软件，或因本软件的任何缺陷导致的任何直接、间接、偶然、特殊、惩罚性或后果性损害（包括但不限于数据丢失、业务中断、利润损失），作者**概不负责**——即使作者已被告知此类损害的可能性。
+**本软件按"现状"提供，自由且免费用于许可范围，不提供任何形式的明示、默示或法定担保**——包括但不限于适销性、特定用途适用性、不侵权、准确性、连续性与无错误的担保。您自行承担使用本软件的全部风险。
 
-IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, PUNITIVE, OR CONSEQUENTIAL DAMAGES (INCLUDING BUT NOT LIMITED TO LOSS OF DATA, BUSINESS INTERRUPTION, OR LOST PROFITS) ARISING OUT OF OR IN CONNECTION WITH THE USE OR INABILITY TO USE THE SOFTWARE—EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+**THE SOFTWARE IS PROVIDED "AS IS" AND FREE OF CHARGE WITHIN THE LICENSED SCOPE, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED — INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, CONTINUITY, AND ERROR-FREENESS. YOU ASSUME THE ENTIRE RISK OF USING THE SOFTWARE.**
 
----
+在任何情况下，因使用或无法使用本软件而产生任何问题，作者**没有义务为您提供任何解决之道**；由此可能造成的任何损失，**本软件与作者概不承担责任**。
 
-## 七、终止 / 7. Termination
-
-1. **自动终止**：你一旦违反本协议任一条款，本协议授予的许可即**自动终止**，无需另行通知；
-   **Automatic termination**: Upon any breach of this Agreement, the license granted herein terminates **automatically**, without further notice;
-2. **终止后果**：终止后你应立即停止使用，并从你控制的全部设备与存储介质中删除本软件及其全部副本；
-   **Effect of termination**: Upon termination you must immediately cease all use and destroy all copies of the Software from all devices and media under your control;
-3. **作者权利**：作者保留随时以发布新版本或公开声明的方式修改、暂停或收回授权的权利；
-   **Author's rights**: The Author reserves the right to amend, suspend, or revoke the license at any time by publishing a new version or a public statement;
-4. **存续条款**：第一、三、五、六、七、八节在终止后继续有效。
-   **Survival**: Sections 1, 3, 5, 6, 7, and 8 survive termination.
+Under no circumstances shall the Author be obliged to provide any remedy for problems arising from the use or inability to use the Software; the Software and the Author **bear no liability for any loss that may result**.
 
 ---
 
-## 八、管辖法律与争议解决 / 8. Governing Law and Dispute Resolution
+## 七、责任限制 / 7. Limitation of Liability
+
+在任何情况下，对于因使用、无法使用本软件，或因本软件的任何缺陷、故障、数据丢失导致的任何直接、间接、偶然、特殊、惩罚性或后果性损害（包括但不限于数据丢失、业务中断、利润损失、商誉损害），作者**概不负责**——即使作者已被告知此类损害的可能性。
+
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, PUNITIVE, OR CONSEQUENTIAL DAMAGES (INCLUDING BUT NOT LIMITED TO LOSS OF DATA, BUSINESS INTERRUPTION, LOST PROFITS, OR LOSS OF GOODWILL) ARISING OUT OF OR IN CONNECTION WITH THE USE OR INABILITY TO USE THE SOFTWARE, OR ANY DEFECT OR FAILURE THEREOF — EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+---
+
+## 八、赔偿 / 8. Indemnification
+
+因您违反本协议任一条款、或因您提供的用户内容、或因您对软件的不当使用，导致作者遭受任何第三方索赔、诉讼、处罚或损失（含合理的律师费与维权成本）的，**您应全额赔偿作者并使其免受损害**。
+
+You shall **indemnify and hold harmless the Author** from and against any third-party claims, lawsuits, penalties, or losses (including reasonable attorney fees and enforcement costs) arising from your breach of this Agreement, your User Content, or your improper use of the Software.
+
+---
+
+## 九、服务变更、暂停与终止 / 9. Service Changes, Suspension, and Termination
+
+1. **变更与停服权**：作者保留**随时**修改、升级、暂停或终止本软件及其任何功能（包括全部文档与支持）的权利，**无需事先通知**，亦不对您或任何第三方因此产生的损失负责；
+   **Right to change and discontinue**: The Author reserves the right to **at any time** modify, upgrade, suspend, or discontinue the Software and any of its features (including all documentation and support), **without prior notice**, and is not liable to you or any third party for resulting losses;
+2. **自动终止**：您一旦违反本协议任一条款，本协议授予的许可即**自动终止**，无需另行通知，本软件同时**保留通过法律手段追究责任的权利**；
+   **Automatic termination**: Upon any breach by you, the license terminates **automatically** without notice, and the Software **reserves the right to pursue legal liability**;
+3. **解释与修订**：**本协议的最终解释权与修订权均归作者所有**。作者可随时修订本协议并发布新版本；修订版发布后您继续使用本软件，即视为接受修订后的协议；
+   **Interpretation and revision**: **The final right of interpretation and revision of this Agreement belongs solely to the Author.** The Author may revise this Agreement at any time; continued use after publication constitutes acceptance of the revised version;
+4. **终止后果**：终止后您应立即停止使用，并从您控制的全部设备与存储介质中删除本软件及其全部副本；
+   **Effect of termination**: Upon termination you must immediately cease all use and destroy all copies of the Software;
+5. **存续条款**：第一、二、四、五、六、七、八、十三、十四节在终止后继续有效。
+   **Survival**: Sections 1, 2, 4, 5, 6, 7, 8, 13, and 14 survive termination.
+
+---
+
+## 十、第三方组件 / 10. Third-Party Components
+
+本软件依赖的第三方开源组件（包括但不限于 Microsoft FASTER KV、xUnit、Microsoft.Data.SqlClient）各自受其原始许可证约束。本协议仅约束 Genesis 项目的原创内容，不影响上述组件的既有授权，亦不构成作者对任何第三方组件的担保。若本软件附带开源许可证，您需一并遵循。
+
+Third-party open-source components bundled with the Software (including but not limited to Microsoft FASTER KV, xUnit, and Microsoft.Data.SqlClient) remain governed by their respective original licenses. This Agreement governs only the original content of the Genesis project. If any open-source license accompanies the Software, you must also comply with it.
+
+---
+
+## 十一、不可抗力 / 11. Force Majeure
+
+因不可抗力（包括但不限于自然灾害、战争、政府行为、网络故障、电力中断、流行病等）导致本软件无法正常提供或使用的，作者不承担任何责任，且不因此视为违约。
+
+The Author shall not be liable for any failure to provide the Software caused by force majeure (including but not limited to natural disasters, war, government actions, network failures, power outages, or epidemics), nor shall such failure constitute a breach.
+
+---
+
+## 十二、出口管制与法律合规 / 12. Export Control and Compliance
+
+您承诺遵守所有适用的出口管制法律与法规。若您位于受制裁或出口管制的国家或地区，或属受制裁主体，则本协议授予的许可对您**不生效**。
+
+You agree to comply with all applicable export control laws and regulations. If you are located in, or are a resident of, any sanctioned or export-controlled country or region, or are a sanctioned party, the license granted herein **shall not take effect** for you.
+
+---
+
+## 十三、管辖法律与争议解决 / 13. Governing Law and Dispute Resolution
 
 本协议受**中华人民共和国法律**（不含港澳台地区法律）管辖。因本协议产生的任何争议，双方应友好协商解决；协商不成的，提交作者所在地有管辖权的人民法院裁决。
 
-This Agreement shall be governed by the laws of the **People's Republic of China** (excluding the laws of Hong Kong, Macao, and Taiwan). Any dispute arising from this Agreement shall first be resolved through friendly negotiation; failing such negotiation, the dispute shall be submitted to the competent people's court at the place where the Author is domiciled.
+This Agreement shall be governed by the laws of the **People's Republic of China** (excluding the laws of Hong Kong, Macao, and Taiwan). Any dispute shall first be resolved through friendly negotiation; failing such negotiation, the dispute shall be submitted to the competent people's court at the place where the Author is domiciled.
 
 ---
 
-## 九、语言与完整协议 / 9. Language and Entire Agreement
+## 十四、语言与完整协议 / 14. Language and Entire Agreement
 
 1. **语言优先**：本协议以中英文双语书写。**两种文本具有同等效力；如有歧义，以中文版本为准。**
    **Language**: This Agreement is written in both Chinese and English. **Both texts are equally authentic; in case of any discrepancy, the Chinese version shall prevail.**
-2. **完整协议**：本协议构成双方就本软件使用达成的完整协议，取代此前的一切口头或书面约定。本协议任何条款被认定无效，不影响其余条款的效力。
-   **Entire Agreement**: This Agreement constitutes the entire agreement between the parties regarding the use of the Software and supersedes all prior agreements. If any provision is held invalid, the remaining provisions shall remain in full force and effect.
+2. **完整协议**：本协议构成双方就本软件使用达成的**完整协议**，取代此前的一切口头或书面约定（含仓库内任何其他文档中的不一致表述）。本协议任何条款被认定无效，不影响其余条款的效力。
+   **Entire Agreement**: This Agreement constitutes the **entire agreement** between the parties regarding the use of the Software and supersedes all prior oral or written agreements (including any inconsistent statements in other documents within this repository). If any provision is held invalid, the remaining provisions remain in full force and effect.
 
 ---
 
-**下载、克隆、编译或以任何方式使用本软件，即表示你已完整阅读、理解并同意接受本协议全部条款的约束。**
+**下载、克隆、编译、安装、运行或以任何方式使用本软件，即表示您已完整阅读、理解并无条件同意接受本协议全部条款的约束。**
 
-**By downloading, cloning, compiling, or otherwise using the Software, you acknowledge that you have read, understood, and agree to be bound by all terms of this Agreement.**
+**By downloading, cloning, compiling, installing, running, or otherwise using the Software in any manner, you acknowledge that you have read, understood, and unconditionally agree to be bound by all terms of this Agreement.**
