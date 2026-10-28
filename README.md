@@ -10,6 +10,14 @@
 
 [中文](#这是什么--what-is-this) ｜ [English](#what-is-this--这是什么)
 
+> ⚠️ **项目状态 / Project Status**
+>
+> **本项目处于萌芽阶段（早期原型）**——架构已闭环、语义已定型，但仍是一个活跃演进中的实验性项目：API 可能随任何一轮迭代调整，请勿用于严肃生产环境。
+> **This project is in its infancy (early prototype)** — the architecture is closed-loop and the semantics are settled, but it remains an actively evolving experimental project: APIs may change with any iteration. Do not use it for serious production workloads.
+>
+> **数据库兼容性 / Database compatibility**：当前**仅适配 SQL Server 2019**（唯一经过 26 轮完整实测的引擎）。`StorageProvider` 抽象为未来适配其他数据库预留了插槽（InMemory/FASTER 为进程内引擎，非 SQL 数据库），但**尚无其他 SQL 数据库（MySQL/PostgreSQL 等）的适配**——移植前请自行评估。
+> **Currently only SQL Server 2019 is supported** (the only engine fully tested across all 26 rounds). The `StorageProvider` abstraction reserves slots for other databases (InMemory/FASTER are in-process engines, not SQL databases), but **no other SQL database (MySQL/PostgreSQL, etc.) has been adapted yet** — evaluate carefully before porting.
+
 ---
 
 ## 这是什么 / What is this
@@ -37,7 +45,7 @@ Genesis is a **single-table isomorphic data engine**: the database contains only
 
 ## 快速开始 / Quick Start
 
-**前置 / Prerequisites**：.NET 10 SDK、SQL Server 2019+（本地实例，`sa` 账号或 `GENESIS_SQL_CONN` 环境变量注入连接串）。
+**前置 / Prerequisites**：.NET 10 SDK、**SQL Server 2019**（唯一适配的数据库版本；本地实例，`sa` 账号或 `GENESIS_SQL_CONN` 环境变量注入连接串）。
 
 ```powershell
 # 1. 建库（src/Emoking.DAL/Sql/UniversalEntity.sql）或直接跑测试（引擎空池自举创世）
