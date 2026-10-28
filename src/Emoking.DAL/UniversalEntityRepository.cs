@@ -496,9 +496,18 @@ public sealed class UniversalEntityRepository
         // 绑定业务列参数。
         AddEntityParameters(command, historyRow);
 
-        // 绑定时间戳参数——历史行保留旧行的原始时间。
-        command.Parameters.AddWithValue("@CreatedAt", historyRow.CreatedAt);
-        command.Parameters.AddWithValue("@UpdatedAt", historyRow.UpdatedAt);
+        // 绑定时间戳参数——显式 DateTime2（第 22 轮 B38：AddWithValue 推断为 datetime（3.33ms 精度），
+        // 历史行 CreatedAt 舍入后与原行差异可达毫秒级，破坏审计时间线无损承诺）。
+        var createdAtParameter = command.Parameters.Add("@CreatedAt", System.Data.SqlDbType.DateTime2);
+
+        // 原始创建时间全精度。
+        createdAtParameter.Value = historyRow.CreatedAt;
+
+        // 绑定更新时间。
+        var updatedAtParameter = command.Parameters.Add("@UpdatedAt", System.Data.SqlDbType.DateTime2);
+
+        // 原始更新时间全精度。
+        updatedAtParameter.Value = historyRow.UpdatedAt;
 
         // 执行插入。
         await command.ExecuteNonQueryAsync(cancellationToken);

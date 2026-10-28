@@ -390,20 +390,19 @@ public sealed class MetaCache
                 continue;
             }
 
-            // 属性规格解析——第 17 轮格式 "Name:Type"（如 "Amount:Decimal"）。
-            // 旧格式 "Name"（无冒号）= 未声明 DataType → 组装时走按值推断（向后兼容）。
-            var spec = row.Value ?? string.Empty;
-            var colonIndex = spec.IndexOf(':', StringComparison.Ordinal);
-            var propName = colonIndex < 0 ? spec : spec[..colonIndex];
+            // 属性规格解析——按前缀路由双格式（第 22 轮）：
+            // "JSON:{...}" 走 JSON 解析（属性名可含冒号等分隔符），否则旧格式 "Name:Type"（第 17 轮）。
+            // 旧格式无冒号 = 未声明 DataType → 组装时走按值推断（向后兼容）。
+            var (propName, declaredType) = MetadataJson.DecodeProperty(row.Value ?? string.Empty);
 
             // 属性名 → 属性 TypeId 写入所属类型的字典。
             ownerType.PropertyTypeIds[propName] = row.Id;
 
             // 显式声明了 DataType 才写入——未声明条目不写入（推断回退的判据）。
-            if (colonIndex >= 0)
+            if (declaredType is not null)
             {
                 // 写入声明的数据类型。
-                ownerType.PropertyDataTypes[propName] = spec[(colonIndex + 1)..];
+                ownerType.PropertyDataTypes[propName] = declaredType;
             }
         }
 
@@ -723,44 +722,15 @@ public sealed class MetaCache
     }
 
     /// <summary>
-    /// 解析引擎指令的键值对文本——格式为 "Key1=V1|Key2=V2"。
+    /// 解析引擎指令的键值对文本——按前缀路由双格式（第 22 轮）：
+    /// "JSON:{...}" 走 JSON 解析（值可含任意分隔符），否则旧格式 "Key1=V1|Key2=V2"。
     /// </summary>
     /// <param name="commandText">指令文本；可为 null。</param>
     /// <returns>键值对字典；文本为空或含空段时返回部分解析结果。</returns>
     private static Dictionary<string, string> ParseEngineCommand(string? commandText)
     {
-        // 结果字典。
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        // 空文本直接返回空字典。
-        if (string.IsNullOrWhiteSpace(commandText))
-        {
-            // 返回空字典。
-            return result;
-        }
-
-        // 按竖线切分键值段。
-        var segments = commandText.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        // 逐段解析。
-        foreach (var segment in segments)
-        {
-            // 每段按第一个等号切成键和值——限制 2 段防止值里含等号被误切。
-            var parts = segment.Split('=', 2);
-
-            // 缺等号的段格式非法，跳过。
-            if (parts.Length != 2)
-            {
-                // 跳过非法段。
-                continue;
-            }
-
-            // 键去空白后入字典。
-            result[parts[0].Trim()] = parts[1].Trim();
-        }
-
-        // 返回解析结果。
-        return result;
+        // 委托统一编解码器——双格式路由（JSON: 前缀 / 旧竖线格式）集中在一处。
+        return MetadataJson.DecodePairs(commandText);
     }
 
     // ============================================================================

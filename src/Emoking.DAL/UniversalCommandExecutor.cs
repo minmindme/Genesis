@@ -193,32 +193,80 @@ public sealed class UniversalCommandExecutor
             ParentId: null,
             Value: typeName));
 
-        // 解析属性行——Props 格式 "Name:String,Amount:Decimal"。
+        // 解析属性行——第 22 轮双格式：Props 支持 JSON 数组（属性名含冒号等分隔符）与旧逗号格式。
         if (context.Args.TryGetValue("Props", out var propsText) && !string.IsNullOrWhiteSpace(propsText))
         {
-            // 逐属性拆分。
+            // JSON 数组分支——"JSON:[{\"Name\":..,\"Type\":..}, ...]"。
+            if (propsText.StartsWith(MetadataJson.Prefix, StringComparison.Ordinal))
+            {
+                // 去前缀反序列化。
+                var propList = System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, string>>>(
+                    propsText[MetadataJson.Prefix.Length..]);
+
+                // 非法 JSON 显式失败（fail fast，不静默半解析）。
+                if (propList is null)
+                {
+                    // 抛出格式异常。
+                    throw new InvalidOperationException($"Props JSON 格式非法：{propsText}");
+                }
+
+                // 逐属性落库——编码路由自动选择 JSON 或旧格式。
+                foreach (var prop in propList)
+                {
+                    // 取属性名（兼容 Name/name）。
+                    var propName = prop.TryGetValue("Name", out var nameValue) ? nameValue
+                        : prop.TryGetValue("name", out var nameLower) ? nameLower
+                        : string.Empty;
+
+                    // 属性名必填。
+                    if (string.IsNullOrWhiteSpace(propName))
+                    {
+                        // 跳过空属性。
+                        continue;
+                    }
+
+                    // 取类型（兼容 Type/type；未声明为 null）。
+                    var propType = prop.TryGetValue("Type", out var typeValue) ? typeValue
+                        : prop.TryGetValue("type", out var typeLower) ? typeLower
+                        : null;
+
+                    // 落库——EncodeProperty 自动路由（含分隔符的属性名 JSON 化）。
+                    context.PendingRows.Add(new UniversalEntity(
+                        Id: Guid.NewGuid(),
+                        TypeId: MetaCache.MetaTypeTypeId,
+                        Role: UniversalEntity.RoleMeta,
+                        ParentId: context.NewTypeId,
+                        Value: MetadataJson.EncodeProperty(propName, propType)));
+                }
+
+                // JSON 分支处理完毕。
+                goto SaveRows;
+            }
+
+            // 旧格式分支——逐属性逗号拆分，decode-encode 往返（含冒号的属性名自动 JSON 化落库）。
             foreach (var propSpec in propsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                // 属性规格按冒号切：属性名:类型。
-                var propParts = propSpec.Split(':');
+                // 属性规格解码（旧格式按第一个冒号切；无冒号 = 未声明类型）。
+                var (propName, propType) = MetadataJson.DecodeProperty(propSpec);
 
                 // 属性名必填。
-                if (string.IsNullOrWhiteSpace(propParts[0]))
+                if (string.IsNullOrWhiteSpace(propName))
                 {
                     // 跳过空属性。
                     continue;
                 }
 
-                // 第 17 轮格式：池中落 "Name:Type"（DataType 显式化，代理与组装共用）。
+                // 落库——第 17 轮格式（含分隔符时自动 JSON 化，DataType 显式化语义不变）。
                 context.PendingRows.Add(new UniversalEntity(
                     Id: Guid.NewGuid(),
                     TypeId: MetaCache.MetaTypeTypeId,
                     Role: UniversalEntity.RoleMeta,
                     ParentId: context.NewTypeId,
-                    Value: propSpec));
+                    Value: MetadataJson.EncodeProperty(propName, propType)));
             }
         }
 
+    SaveRows:
         // 落库。
         await _repository.InsertBatchAsync(context.PendingRows);
     }
@@ -320,7 +368,7 @@ public sealed class UniversalCommandExecutor
                 ParentId: null,
                 Value: entity.Name));
 
-            // 属性行——"字段:类型" 格式（DataType 显式化）。
+            // 属性行——第 22 轮：decode-encode 往返落库（旧 "字段:类型" 语义不变；含分隔符的属性名自动 JSON 化）。
             foreach (var propSpec in (entity.Props ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 // 跳过空属性。
@@ -330,13 +378,16 @@ public sealed class UniversalCommandExecutor
                     continue;
                 }
 
-                // 属性行。
+                // 属性规格解码——按前缀路由双格式。
+                var (propName, propType) = MetadataJson.DecodeProperty(propSpec);
+
+                // 属性行落库——EncodeProperty 自动路由（含冒号属性名 JSON 化）。
                 context.PendingRows.Add(new UniversalEntity(
                     Id: Guid.NewGuid(),
                     TypeId: MetaCache.MetaTypeTypeId,
                     Role: UniversalEntity.RoleMeta,
                     ParentId: typeId,
-                    Value: propSpec));
+                    Value: MetadataJson.EncodeProperty(propName, propType)));
             }
 
             // 存储模式指令——非 Graph 模式时生成。

@@ -1,5 +1,55 @@
 # Genesis 更新日志
 
+## 2026-10-28 第 22 轮：DSL 转义（第三座山）——"JSON:" 前缀双格式，分隔符裂缝根治
+
+### 更新内容（采纳评审建议 ①：内生正确性优先）
+
+**核心设计——复用项目自己的"前缀版本化"哲学**（与 AGC1:/PLN1:/SNAP1: 同一机制）：新增 `JSON:` 前缀，解析器按前缀路由双格式——旧格式零破坏兼容，新格式承载任意分隔符，**永不半解析**。
+
+1. **新增 [MetadataJson.cs](../src/Emoking.DAL/MetadataJson.cs)**（统一编解码器，消灭散落的 Split）：
+   - `DecodePairs` / `EncodePairs`：键值对双格式。JSON 分支：非法 JSON 显式失败（fail fast 不静默）；**数组值 join 为 ";"**（Role=7 Steps 与既有执行器 Split(';') 消费方零改动兼容）。编码侧路由：任一键/值含 `|` `=` 自动 JSON 化，纯值保持旧格式（池中可读性优先）。
+   - `DecodeProperty` / `EncodeProperty`：属性规格双格式。属性名/类型含 `:` 自动 JSON 化（B17 类冒号裂缝根治），旧 "Name:Type" 语义不变。
+2. **MetaCache 接入**（读取侧）：
+   - `ParseEngineCommand` → 委托 `MetadataJson.DecodePairs`——Role=4/5/7/8 全部指令/策略/命令/UI 行受益；
+   - `ParseMetaRows` 属性行 → `DecodeProperty`——JSON 格式属性行（属性名含冒号）正确注册与反查。
+3. **UniversalCommandExecutor 接入**（写入侧）：
+   - `InsertTypeMeta` 的 Props 支持 **JSON 数组**（`Props=JSON:[{"Name":"Ratio:Base","Type":"String"},...]`）——属性名含分隔符不再炸；旧逗号格式走 decode-encode 往返（含冒号属性名自动 JSON 化落库）；
+   - `ImportSystem` 属性行落库同样 decode-encode 往返。
+4. **存量数据零迁移**：旧格式行按前缀判定走原解析路径，双格式可长期共存。
+
+### 测试（先红后绿实录）
+
+- 红阶段：单元 5/5 绿（新编解码器自身）、**集成 3/3 红**（MetaCache/Executor 未接入——JSON 指令行半解析、属性行反查失败）；
+- 绿阶段：**8/8 通过**——
+  - 旧格式回归（存量零破坏）；JSON 值含 `|` `=` 无损；JSON 数组 Steps → 分号串兼容执行器；
+  - 编码路由（含分隔符自动 JSON 化）；属性规格双格式往返（`Ratio:Base` 作为属性名不再半解析）；
+  - 集成：JSON 指令行 LoadAsync 后路由正确；JSON 属性行反查 + DataType 注册；Executor Props JSON 数组全链路。
+
+### 排障实录（本轮两个 BUG）
+
+| BUG | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| B37 重演 | Executor 集成测试 "Title" 属性丢失 | 新测试类漏加方法级 TRUNCATE——同类共享库，前序测试的 Doc 行残留致 GetTypeIdByName 命中旧类型 | 补方法级 TRUNCATE（第 21 轮"类级建库 + 方法级 TRUNCATE"双层隔离纪律再次验证） |
+| B38 | Upsert 历史行 CreatedAt 断言差异 1.1ms > 1ms 容差（flaky） | `AddWithValue` 把 DateTime 参数推断为 SQL `datetime`（3.33ms 精度）——历史行时间戳舍入后与原行偏差可达毫秒级，破坏审计无损承诺 | 历史行时间戳参数显式 `SqlDbType.DateTime2`（全精度往返） |
+
+### 验收
+
+- `dotnet build`：0 警告 0 错误。
+- 全量回归：**72 通过 / 0 失败 / 5 跳过**（+8 MetadataJson 双格式测试）。
+- 先红后绿：集成红 3/3 → 全绿 8/8。
+
+### 诚实边界
+
+- ImportSystem 的 SystemJson 内 Props 仍是逗号分隔字符串（SystemDefinition 契约）——**属性名含逗号**的极端场景输入侧仍会切错（落库侧已 JSON 化防护）；Props 输入侧 JSON 化属 SystemDefinition 契约扩展，列旁支。
+- CreateEntity/CLI 的 argv 传参（K=V 空格切分）未变——含空格的值经 HTTP 字典参数无碍，CLI 壳子引号语义未处理。
+- 白皮书停在 19 轮（21/22 轮待一次性写入 3.0）。
+
+### 未改旁支
+
+入边级联清理（评审②）、LLM 意图接入（评审③）、白皮书 3.0、ImportSystem Props 契约扩展、GitHub 推送（本地领先 6 提交，仍缺 remote 地址）、SM4、雪花 ID。
+
+---
+
 ## 2026-10-28 第 21 轮：方案 A——图模式 UpdateData（级联 Diff）+ 测试基建解放（每类独立库）
 
 ### 更新内容（方案 A 两大战役）
