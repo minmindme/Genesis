@@ -328,6 +328,91 @@ public sealed class InMemoryUniversalStore : IUniversalStore
     }
 
     /// <summary>
+    /// 图更新锁对象——图替换四步（主行 CAS + 软删 + 历史行与新行插入）全程串行化，等效原子。
+    /// </summary>
+    private readonly object _updateGraphLock = new();
+
+    /// <summary>
+    /// 图模式子图替换——主行 CAS + 旧行软删 + 历史行与新行插入，全程 <c>lock</c> 串行化（等效原子，第 26 轮）。
+    /// </summary>
+    /// <param name="newEntityRow">新主行（Id 为目标实体行；Version 为期望的当前版本）。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合。</param>
+    /// <param name="historyRows">预构造的历史行集合。</param>
+    /// <param name="newPropertyRows">新属性行集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终主行（Version 已递增）。</returns>
+    public Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default)
+    {
+        // 全程加锁——四步对其他写者等效原子（评审 5 的 InMemory 分级实现）。
+        lock (_updateGraphLock)
+        {
+            // 第 1 步：取现存主行。
+            _rows.TryGetValue(newEntityRow.Id, out var existing);
+
+            // 行不存在——冲突语义。
+            if (existing is null || existing.IsDeleted)
+            {
+                // 抛出并发冲突。
+                throw new ConcurrencyConflictException(
+                    $"并发冲突：实体行 {newEntityRow.Id} 不存在或已软删——子图替换被拒绝。");
+            }
+
+            // Version 快速比对。
+            if (existing.Version != newEntityRow.Version)
+            {
+                // 抛出乐观锁冲突。
+                throw new ConcurrencyConflictException(
+                    $"乐观锁冲突：行 {newEntityRow.Id} 存储版本为 {existing.Version}，请求版本为 {newEntityRow.Version}——请重读后重试。");
+            }
+
+            // 第 2 步：构造更新后的主行。
+            var updatedRow = newEntityRow with
+            {
+                // 乐观锁版本递增。
+                Version = existing.Version + 1,
+                // 创建时间保留原始创建时间。
+                CreatedAt = existing.CreatedAt,
+                // 更新时间取当前。
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // 第 3 步：CAS 覆盖主行。
+            if (!_rows.TryUpdate(newEntityRow.Id, updatedRow, existing))
+            {
+                // 抛出并发冲突。
+                throw new ConcurrencyConflictException(
+                    $"并发冲突：行 {newEntityRow.Id} 在写入间隙被其他事务更新——请重读后重试。");
+            }
+
+            // 第 4 步：旧属性行软删。
+            foreach (var oldId in oldPropertyRowIds)
+            {
+                // 软删命中才覆盖。
+                if (_rows.TryGetValue(oldId, out var oldRow) && !oldRow.IsDeleted)
+                {
+                    // 软删副本覆盖。
+                    _rows[oldId] = oldRow with { IsDeleted = true };
+                }
+            }
+
+            // 第 5 步：历史行与新属性行入池。
+            foreach (var row in historyRows.Concat(newPropertyRows))
+            {
+                // 入池。
+                _rows.TryAdd(row.Id, row);
+            }
+
+            // 返回最终主行。
+            return Task.FromResult<UniversalEntity>(updatedRow);
+        }
+    }
+
+    /// <summary>
     /// 清空整个池——接口外的扩展方法，基准与测试基建使用。
     /// </summary>
     /// <param name="cancellationToken">取消令牌。</param>

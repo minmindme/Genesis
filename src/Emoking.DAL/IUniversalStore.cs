@@ -124,4 +124,27 @@ public interface IUniversalStore
     Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
         Guid entityId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 图模式子图替换（第 26 轮事务收口）——主行 CAS + 旧行软删 + 历史行与新行插入，一次调用完成。
+    /// </summary>
+    /// <remarks>
+    /// 事务语义按引擎分级：
+    ///   - SqlServer：**单事务**——主行 CAS、旧属性行软删、历史行与新属性行插入要么全成要么全败；
+    ///   - InMemory：全程 <c>lock</c> 串行化——等效原子；
+    ///   - FASTER：**非事务**（单会话语义，见实现类声明）——按顺序执行，失败可能留中间态，仅限单写者场景。
+    /// 主行 CAS 失败（ExpectedVersion 不符）→ 抛 <see cref="ConcurrencyConflictException"/>，其余步骤不执行。
+    /// </remarks>
+    /// <param name="newEntityRow">新主行（Id 为目标实体行；Version 为期望的当前版本）。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合（只含属性行——边由调用方保证不混入）。</param>
+    /// <param name="historyRows">预构造的历史行集合（Role=6，调用方负责版本归属与变更时刻）。</param>
+    /// <param name="newPropertyRows">新属性行集合（ParentId 已指向目标实体行）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终主行（Version 已递增）。</returns>
+    Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default);
 }

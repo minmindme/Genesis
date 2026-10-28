@@ -706,6 +706,124 @@ public sealed class UniversalEntityRepository
     }
 
     /// <summary>
+    /// 图模式子图替换（单事务）——主行 CAS + 旧属性行软删 + 历史行与新属性行插入，原子生效（第 26 轮评审 5）。
+    /// </summary>
+    /// <remarks>
+    /// 执行顺序（全部在同一事务内）：主行 CAS UPDATE（WHERE Version 兜底）→ 旧属性行批量软删 →
+    /// 历史行逐行显式时间戳插入 → 新属性行插入。任一步失败整批回滚——实体升版与属性行替换原子绑定。
+    /// </remarks>
+    /// <param name="newEntityRow">新主行（Id 为目标实体行；Version 为期望的当前版本）。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合。</param>
+    /// <param name="historyRows">预构造的历史行集合（Role=6，含版本归属与变更时刻）。</param>
+    /// <param name="newPropertyRows">新属性行集合（ParentId 已指向目标实体行）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终主行（Version 已递增、CreatedAt 为原始创建时间）。</returns>
+    /// <exception cref="ConcurrencyConflictException">Version 不匹配或并发抢先时抛出。</exception>
+    public async Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default)
+    {
+        // 拿到已打开的连接与显式事务——四步原子生效。
+        using var connection = _dbContext.CreateConnection();
+        using var transaction = connection.BeginTransaction();
+
+        try
+        {
+            // 第 1 步：读现存主行。
+            var existing = await GetRowInTransactionAsync(connection, transaction, newEntityRow.Id, cancellationToken);
+
+            // 行不存在——冲突语义（目标实体消失）。
+            if (existing is null)
+            {
+                // 抛出并发冲突。
+                throw new ConcurrencyConflictException(
+                    $"并发冲突：实体行 {newEntityRow.Id} 不存在或已软删——子图替换被拒绝。");
+            }
+
+            // Version 快速比对。
+            if (existing.Version != newEntityRow.Version)
+            {
+                // 抛出乐观锁冲突。
+                throw new ConcurrencyConflictException(
+                    $"乐观锁冲突：行 {newEntityRow.Id} 存储版本为 {existing.Version}，请求版本为 {newEntityRow.Version}——请重读后重试。");
+            }
+
+            // 第 2 步：主行 CAS UPDATE——WHERE Version 兜底并发窗口。
+            var affected = await UpdateCasInTransactionAsync(connection, transaction, newEntityRow, newEntityRow.Version, cancellationToken);
+
+            // 0 行 = 被抢先。
+            if (affected == 0)
+            {
+                // 抛出并发冲突。
+                throw new ConcurrencyConflictException(
+                    $"并发冲突：行 {newEntityRow.Id} 在写入间隙被其他事务更新——请重读后重试。");
+            }
+
+            // 第 3 步：旧属性行批量软删（事务内——复用 OPENJSON 参数化）。
+            if (oldPropertyRowIds.Count > 0)
+            {
+                // 构造软删命令。
+                await using var softDeleteCommand = connection.CreateCommand();
+
+                // 绑定事务。
+                softDeleteCommand.Transaction = transaction;
+
+                // 参数化批量软删。
+                softDeleteCommand.CommandText = @"
+                    UPDATE [dbo].[UniversalEntity]
+                    SET [IsDeleted] = 1, [UpdatedAt] = SYSUTCDATETIME()
+                    WHERE [IsDeleted] = 0
+                      AND [Id] IN (SELECT CAST([value] AS UNIQUEIDENTIFIER) FROM OPENJSON(@IdsJson))";
+
+                // 序列化 Id 集合。
+                softDeleteCommand.Parameters.AddWithValue("@IdsJson", JsonSerializer.Serialize(oldPropertyRowIds.ToList()));
+
+                // 执行。
+                await softDeleteCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            // 第 4 步：历史行逐行插入（显式时间戳——保留版本归属与变更时刻）。
+            foreach (var historyRow in historyRows)
+            {
+                // 插入历史行。
+                await InsertHistoryRowInTransactionAsync(connection, transaction, historyRow, cancellationToken);
+            }
+
+            // 第 5 步：新属性行插入。
+            foreach (var newPropertyRow in newPropertyRows)
+            {
+                // 插入新行。
+                await InsertNewRowInTransactionAsync(connection, transaction, newPropertyRow, cancellationToken);
+            }
+
+            // 提交事务——四步原子生效。
+            await transaction.CommitAsync(cancellationToken);
+
+            // 返回落库后的最终主行。
+            return newEntityRow with
+            {
+                // 乐观锁版本递增。
+                Version = existing.Version + 1,
+                // 创建时间保留原始创建时间。
+                CreatedAt = existing.CreatedAt,
+                // 更新时间取当前。
+                UpdatedAt = DateTime.UtcNow
+            };
+        }
+        catch
+        {
+            // 任何一步失败整批回滚。
+            await transaction.RollbackAsync(cancellationToken);
+
+            // 向上抛异常。
+            throw;
+        }
+    }
+
+    /// <summary>
     /// 按 Id 软删除一行——只置 IsDeleted = 1，物理行保留。
     /// </summary>
     /// <param name="id">待软删除的行 Id。</param>

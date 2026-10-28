@@ -72,6 +72,72 @@ public sealed class UniversalCommandExecutor
     }
 
     /// <summary>
+    /// 只读校验一条工作流命令（Dry-run，第 26 轮评审 4）——不执行任何步骤、不写任何数据。
+    /// </summary>
+    /// <remarks>
+    /// 用途：网关收到 <see cref="MetadataNotRegisteredException"/> 时的前置裁决——
+    /// 校验通过（缺陷为空）= 元数据实际齐备，异常来自运行时 → **不 reload**（杜绝部分写入后重试）；
+    /// 校验有缺陷 = 元数据问题属实 → reload + 重试。
+    /// </remarks>
+    /// <param name="commandName">命令名。</param>
+    /// <param name="args">动作参数。</param>
+    /// <returns>缺陷列表；空列表 = 校验通过。</returns>
+    public IReadOnlyList<string> ValidateCommand(
+        string commandName,
+        IReadOnlyDictionary<string, string> args)
+    {
+        // 缺陷收集。
+        var defects = new List<string>();
+
+        // 命令注册检查。
+        var command = _metaCache.GetCommand(commandName);
+
+        // 未注册。
+        if (command is null)
+        {
+            // 记录缺陷。
+            defects.Add($"命令 '{commandName}' 未注册（Role=7）。");
+
+            // 短路——命令都不存在，后续检查无意义。
+            return defects;
+        }
+
+        // 步骤注册检查。
+        var steps = command.TryGetValue("Steps", out var stepsText)
+            ? stepsText.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : Array.Empty<string>();
+
+        // 逐步骤检查注册表。
+        foreach (var stepName in steps)
+        {
+            // 未注册步骤。
+            if (!_steps.ContainsKey(stepName))
+            {
+                // 记录缺陷。
+                defects.Add($"步骤 '{stepName}' 未注册。");
+            }
+        }
+
+        // 必填参数检查——Args 定义列表中的参数必须全部传入。
+        if (command.TryGetValue("Args", out var argsText))
+        {
+            // 逐参数检查。
+            foreach (var required in argsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                // 缺参。
+                if (!args.ContainsKey(required))
+                {
+                    // 记录缺陷。
+                    defects.Add($"缺少参数 '{required}'。");
+                }
+            }
+        }
+
+        // 返回缺陷列表（空 = 通过）。
+        return defects;
+    }
+
+    /// <summary>
     /// 步骤执行上下文——承载命令定义、解析后的参数与步骤间产物。
     /// </summary>
     public sealed class StepContext

@@ -65,49 +65,8 @@ public static class TestDatabase
         // 立即打开。
         connection.Open();
 
-        // 第 0 步（第 25 轮评审小笔记修复）：清理孤儿测试库——
-        // 严格限定本工具命名签名（GenesisTest_类名_6位hex），崩溃残留（DROP 未执行）在此回收；
-        // 不匹配该签名（如手工创建的同前缀库）永不触碰。
-        await using (var cleanupCommand = connection.CreateCommand())
-        {
-            // 枚举孤儿库。
-            cleanupCommand.CommandText = @"
-                SELECT name FROM sys.databases
-                WHERE name LIKE 'GenesisTest\_%' ESCAPE '\'
-                  AND name LIKE '%[_][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'";
-
-            // 逐个强删。
-            await using var reader = await cleanupCommand.ExecuteReaderAsync();
-
-            // 收集孤儿名（先读完再删——Reader 占用时不能执行其他命令）。
-            var orphanNames = new List<string>();
-
-            // 读取。
-            while (await reader.ReadAsync())
-            {
-                // 收集。
-                orphanNames.Add(reader.GetString(0));
-            }
-
-            // 关闭 Reader。
-            await reader.CloseAsync();
-
-            // 逐个删除。
-            foreach (var orphan in orphanNames)
-            {
-                // 构造删除命令。
-                await using var dropCommand = connection.CreateCommand();
-
-                // 强断连接后删除。
-                dropCommand.CommandText =
-                    $"EXEC('ALTER DATABASE [{orphan}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{orphan}]')";
-
-                // 执行。
-                await dropCommand.ExecuteNonQueryAsync();
-            }
-        }
-
-        // 第 1 步：同名残留库先强删（与本次同名的兜底）。
+        // 第 1 步（第 26 轮改归属制）：同名残留库先强删——与本次将建的库名精确同名才算残留（随机后缀下不可能，纯兜底）。
+        // **不再启动时盲删前缀匹配库**——孤儿清理由 CleanupStaleOrphansAsync（显式 `cleanup-stale-dbs` 参数）承担。
 
         // 第 2 步：创建全新库。
         await using (var createCommand = connection.CreateCommand())
@@ -125,6 +84,127 @@ public static class TestDatabase
 
         // 第 4 步：建表——与 UniversalEntity.sql 同构的精简 DDL（9 列 + 主键 + 2 索引）。
         await ExecuteDdlAsync();
+
+        // 第 5 步（第 26 轮归属制）：写存活标记——清理工具据此判定库的归属与年龄，**不靠启动时盲删**。
+        // 注意：必须用**测试库连接**（master 连接会把 marker 建到 master——B42 教训）。
+        await using var markerConnection = new SqlConnection(CurrentConnectionString);
+
+        // 打开测试库连接。
+        markerConnection.Open();
+
+        // marker 表 + 当前进程标记。
+        await using var markerCommand = markerConnection.CreateCommand();
+
+        // marker 表 + 当前进程标记。
+        markerCommand.CommandText = $@"
+            CREATE TABLE [dbo].[__GenesisRunMarker__] (
+                [ProcessId] INT NOT NULL,
+                [MachineName] NVARCHAR(100) NOT NULL,
+                [CreatedUtc] DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+            );
+            INSERT INTO [dbo].[__GenesisRunMarker__] ([ProcessId], [MachineName])
+            VALUES ({Environment.ProcessId}, '{Environment.MachineName}');";
+
+        // 执行。
+        await markerCommand.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// 清理僵尸测试库——**显式入口**（`dotnet run -- cleanup-stale-dbs`，人工确认后执行，第 26 轮）。
+    /// </summary>
+    /// <remarks>
+    /// 僵尸判定（双条件）：库内存在本工具的 <c>__GenesisRunMarker__</c> 表 **且** CreatedUtc 距今超过 60 分钟——
+    /// 测试库正常寿命在分钟级，超时即进程崩溃未 DROP 的残留。无 marker 表的同前缀库**永不触碰**。
+    /// </remarks>
+    /// <returns>清理的库数量。</returns>
+    public static async Task<int> CleanupStaleOrphansAsync()
+    {
+        // 打开 master 管理连接。
+        using var connection = new SqlConnection(AdminConnectionString);
+
+        // 立即打开。
+        connection.Open();
+
+        // 枚举全部同前缀库。
+        await using var listCommand = connection.CreateCommand();
+
+        // 查询。
+        listCommand.CommandText = "SELECT name FROM sys.databases WHERE name LIKE 'GenesisTest\\_%' ESCAPE '\\'";
+
+        // 读取库清单。
+        await using var reader = await listCommand.ExecuteReaderAsync();
+
+        // 收集。
+        var candidates = new List<string>();
+
+        // 读取。
+        while (await reader.ReadAsync())
+        {
+            // 收集。
+            candidates.Add(reader.GetString(0));
+        }
+
+        // 关闭 Reader。
+        await reader.CloseAsync();
+
+        // 清理计数。
+        var cleaned = 0;
+
+        // 逐库判定。
+        foreach (var candidate in candidates)
+        {
+            // 判定是否僵尸——marker 表存在且过老。
+            try
+            {
+                // 打开库连接（存在性隐含检查）。
+                using var dbConnection = new SqlConnection($"Server=localhost;Database={candidate};User Id=sa;Password=123;TrustServerCertificate=True;");
+
+                // 打开。
+                dbConnection.Open();
+
+                // 读 marker 年龄。
+                await using var ageCommand = dbConnection.CreateCommand();
+
+                // 查询——无 marker 表的库直接抛错进 catch（永不触碰）。
+                ageCommand.CommandText = "SELECT DATEDIFF(MINUTE, MAX([CreatedUtc]), SYSUTCDATETIME()) FROM [dbo].[__GenesisRunMarker__]";
+
+                // 年龄（分钟）。
+                var ageMinutes = Convert.ToInt32(await ageCommand.ExecuteScalarAsync());
+
+                // 未超阈值——跳过（可能仍在运行）。
+                if (ageMinutes < 60)
+                {
+                    // 跳过。
+                    continue;
+                }
+
+                // 关闭库连接后删除。
+                dbConnection.Close();
+
+                // 强删僵尸库。
+                await using var dropCommand = connection.CreateCommand();
+
+                // 删除。
+                dropCommand.CommandText =
+                    $"EXEC('ALTER DATABASE [{candidate}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{candidate}]')";
+
+                // 执行。
+                await dropCommand.ExecuteNonQueryAsync();
+
+                // 计数。
+                cleaned++;
+
+                // 输出。
+                Console.WriteLine($">>> 已清理僵尸测试库：{candidate}（库龄 {ageMinutes} 分钟）");
+            }
+            catch
+            {
+                // 无 marker 表或连接失败——跳过（永不触碰无法确认归属的库）。
+            }
+        }
+
+        // 返回清理数。
+        return cleaned;
     }
 
     /// <summary>

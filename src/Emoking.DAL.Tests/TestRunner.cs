@@ -19,6 +19,19 @@ public static class TestRunner
     /// <param name="args">可选：类名过滤子串（如 "SecurityStoreTests" 只跑匹配的测试类）。</param>
     public static async Task<int> Main(string[] args)
     {
+        // 显式清理入口（第 26 轮）：`dotnet run -- cleanup-stale-dbs`——人工确认后执行僵尸测试库回收。
+        if (args.Length > 0 && string.Equals(args[0], "cleanup-stale-dbs", StringComparison.OrdinalIgnoreCase))
+        {
+            // 执行清理。
+            var cleaned = await TestDatabase.CleanupStaleOrphansAsync();
+
+            // 输出汇总。
+            Console.WriteLine($"=== 清理完成：{cleaned} 个僵尸测试库已删除 ===");
+
+            // 退出。
+            return 0;
+        }
+
         // 读取可选的类名过滤子串。
         var classNameFilter = args.Length > 0 ? args[0] : null;
 
@@ -147,10 +160,21 @@ public static class TestRunner
             finally
             {
                 // 类级清理（第 21 轮）——独立测试库 DROP；异常路径同样清理。
+                // 第 26 轮容错：清理失败计入失败但不中断后续类（评审漏计修复）。
                 if (lifetimeInstance is not null)
                 {
-                    // 清理。
-                    await lifetimeInstance.DisposeAsync();
+                    // 清理——失败不吞。
+                    try
+                    {
+                        // 清理。
+                        await lifetimeInstance.DisposeAsync();
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        // 计入失败并继续下一类。
+                        failed++;
+                        Console.WriteLine($"[CLEANUP FAIL] {type.Name} - {cleanupEx.Message}");
+                    }
                 }
             }
         }

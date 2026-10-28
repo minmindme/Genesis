@@ -16,6 +16,10 @@ namespace Emoking.DAL;
 /// 实测（5 万行）：写入 61.7 万行/s、读回 131.6 万行/s。
 /// Value 载荷为 <see cref="UniversalEntityCodec"/> 打包字节；子图预取通过 FASTER 迭代器全量扫描过滤。
 /// 内存预算 32MB（2^25）为 5 万行规模的实测安全值，更大规模应按数据量调大。
+/// **并发与事务语义声明（第 26 轮撤销"已对齐"表述）**：FASTER 为单会话语义——本实现的
+/// UpsertAsync 是"读-校验-写"序列，**非原子 CAS**，并发窗口内可能产生竞态；
+/// DeleteManyAsync 为逐行软删无事务。仅适用于单线程写入/边缘缓存/单会话场景——
+/// 多写者并发一致性请使用 SqlServerUniversalStore（单事务 + 真 CAS）。
 /// </remarks>
 public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
 {
@@ -535,6 +539,99 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
 
         // 返回只读结果。
         return Task.FromResult<IReadOnlyList<UniversalEntity>>(ordered);
+    }
+
+    /// <summary>
+    /// 图模式子图替换——按顺序执行主行覆盖、旧行软删、历史行与新行写入。
+    /// </summary>
+    /// <remarks>
+    /// **非事务声明（第 26 轮）**：FASTER 单会话语义无事务——四步顺序执行，中途失败可能留中间态；
+    /// 仅限单写者场景，多写者并发一致性请使用 SqlServerUniversalStore。
+    /// </remarks>
+    /// <param name="newEntityRow">新主行。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合。</param>
+    /// <param name="historyRows">预构造的历史行集合。</param>
+    /// <param name="newPropertyRows">新属性行集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终主行。</returns>
+    public Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default)
+    {
+        // 打开会话。
+        using var session = NewSession();
+
+        // 第 1 步：读现存主行。
+        var existing = ReadRow(session, newEntityRow.Id);
+
+        // 行不存在——冲突语义。
+        if (existing is null || existing.IsDeleted)
+        {
+            // 抛出并发冲突。
+            throw new ConcurrencyConflictException(
+                $"并发冲突：实体行 {newEntityRow.Id} 不存在或已软删——子图替换被拒绝。");
+        }
+
+        // Version 快速比对。
+        if (existing.Version != newEntityRow.Version)
+        {
+            // 抛出乐观锁冲突。
+            throw new ConcurrencyConflictException(
+                $"乐观锁冲突：行 {newEntityRow.Id} 存储版本为 {existing.Version}，请求版本为 {newEntityRow.Version}——请重读后重试。");
+        }
+
+        // 第 2 步：构造并覆盖主行。
+        var updatedRow = newEntityRow with
+        {
+            // 乐观锁版本递增。
+            Version = existing.Version + 1,
+            // 创建时间保留原始创建时间。
+            CreatedAt = existing.CreatedAt,
+            // 更新时间取当前。
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        // 覆盖主行。
+        var mainKey = newEntityRow.Id;
+        var mainValue = UniversalEntityCodec.Pack(updatedRow);
+
+        // 写入。
+        session.Upsert(ref mainKey, ref mainValue);
+
+        // 第 3 步：旧属性行软删——逐行读改写。
+        foreach (var oldId in oldPropertyRowIds)
+        {
+            // 读旧行。
+            var oldRow = ReadRow(session, oldId);
+
+            // 命中且未删才软删。
+            if (oldRow is not null && !oldRow.IsDeleted)
+            {
+                // 打包软删副本。
+                var oldKey = oldId;
+                var oldValue = UniversalEntityCodec.Pack(oldRow with { IsDeleted = true });
+
+                // 覆盖写回。
+                session.Upsert(ref oldKey, ref oldValue);
+            }
+        }
+
+        // 第 4 步：历史行与新属性行写入。
+        foreach (var row in historyRows.Concat(newPropertyRows))
+        {
+            // 打包写入（新 Guid key 不冲突）。
+            var rowKey = row.Id;
+            var rowValue = UniversalEntityCodec.Pack(row);
+
+            // 写入。
+            session.Upsert(ref rowKey, ref rowValue);
+        }
+
+        // 返回最终主行。
+        return Task.FromResult<UniversalEntity>(updatedRow);
     }
 
     /// <summary>

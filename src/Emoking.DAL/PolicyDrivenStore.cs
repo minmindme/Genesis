@@ -254,6 +254,57 @@ public sealed class PolicyDrivenStore : IUniversalStore
     }
 
     /// <summary>
+    /// 图模式子图替换——限流 → 不可见拒绝 → 加密（主行/历史行/新行）→ 委托内层 → 解密返回。
+    /// </summary>
+    /// <param name="newEntityRow">新主行（Id 为目标实体行；Version 为期望的当前版本）。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合。</param>
+    /// <param name="historyRows">预构造的历史行集合。</param>
+    /// <param name="newPropertyRows">新属性行集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终明文主行。</returns>
+    public async Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default)
+    {
+        // 第 1 步：限流校验（全批行数）。
+        EnforceRateLimit(1 + historyRows.Count + newPropertyRows.Count);
+
+        // 第 2 步：不可见拒绝——目标实体对本租户不可见时拒绝覆盖（与 UpsertAsync 同一不变量）。
+        var raw = await _inner.GetByIdAsync(newEntityRow.Id, cancellationToken);
+
+        // 物理存在时校验可见性。
+        if (raw is not null)
+        {
+            // 本层可见性判断。
+            var visible = await GetByIdAsync(newEntityRow.Id, cancellationToken);
+
+            // 不可见即拒绝。
+            if (visible is null)
+            {
+                // 抛出拒绝异常。
+                throw new InvalidOperationException(
+                    $"实体行 {newEntityRow.Id} 对本租户不可见——拒绝覆盖他人的数据（不可见不可写）。");
+            }
+        }
+
+        // 第 3 步：加密——主行、历史行、新属性行全部经加密策略处理。
+        var processedEntity = ProcessValues(new[] { newEntityRow }).Single();
+        var processedHistory = ProcessValues(historyRows);
+        var processedNew = ProcessValues(newPropertyRows);
+
+        // 第 4 步：委托内层（SQL 单事务 / InMemory 锁 / FASTER 顺序）。
+        var stored = await _inner.UpdateGraphAsync(processedEntity, oldPropertyRowIds, processedHistory, processedNew, cancellationToken);
+
+        // 第 5 步：返回明文主行。
+        return TryRestoreValue(stored.Value, out var plainValue)
+            ? stored with { Value = plainValue }
+            : stored;
+    }
+
+    /// <summary>
     /// 限流校验——行数超过 Role=5 RateLimit 策略上限时拒绝。
     /// </summary>
     /// <param name="rowCount">本次写入的行数。</param>

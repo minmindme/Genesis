@@ -326,17 +326,13 @@ public sealed class UniversalActionBus
                 null);
         }
 
-        // ===== 图模式轨：三步子图替换（PUT）=====
+        // ===== 图模式轨：单次 UpdateGraphAsync（第 26 轮事务收口——三步编排不再由总线自行拼装）=====
 
-        // 第 1 步：主实体 CAS Upsert——对齐真实 Id 与客户端期望版本。
+        // 第 1 步：构造新主行——对齐真实 Id 与客户端期望版本。
         var newEntityRow = decomposed[0] with { Id = entityId, Version = expectedVersion };
 
-        // CAS 覆盖主实体。
-        var upsertedEntity = (await _store.UpsertAsync(new[] { newEntityRow })).Single();
-
-        // 第 2 步：旧属性行批量软删（单事务）——**只删属性行，边不动**（P0-1 修复）。
-        // 区分依据：属性行 TypeId ∈ 本类型元数据的 PropertyTypeIds.Values；
-        // 边行 TypeId 是 EdgeType 元 TypeId（不在属性集内），历史行 Role=6 已被指针追逐排除。
+        // 第 2 步：筛选旧属性行——**只筛属性行，边不动**（P0-1 修复）。
+        // 区分依据：属性行 TypeId ∈ 本类型元数据的 PropertyTypeIds.Values。
         var metaType = _metaCache.GetTypeByTypeId(entityRow.TypeId);
 
         // 本类型的属性元 TypeId 集合。
@@ -345,16 +341,14 @@ public sealed class UniversalActionBus
         // 指针追逐取全部子行。
         var oldChildren = await _store.GetByParentIdAsync(entityId);
 
-        // 只筛属性行——边行原样保留（保留完整行对象，历史复制要用）。
+        // 只筛属性行（保留完整行对象，历史复制要用）。
         var oldPropertyRows = oldChildren
             .Where(row => propertyTypeIds.Contains(row.TypeId))
             .ToList();
 
-        // 第 2.5 步：旧属性行复制为 Role=6 历史行（第 24 轮评审 6——system as history 对图模式完整兑现）：
-        // Id 换新、Role 改历史、ParentId 挂到当前实体行、TypeId/Value 原样保留——
-        // 审计链经 GetHistory 动作读取，属性名经 TypeId 反查还原。
-        // 第 25 轮 P1 版本归属：历史行 Version = 被覆盖前实体的版本（expectedVersion），
-        // UpdatedAt = 本次变更时刻——历史行与实体版本链对齐。
+        // 第 3 步：构造历史行——旧属性行复制为 Role=6（第 24 轮评审 6）：
+        // Id 换新、Role 改历史、ParentId 挂当前实体行、TypeId/Value 原样保留；
+        // 版本归属（第 25 轮 P1）：Version = 被覆盖前实体的版本；UpdatedAt = 变更时刻。
         var propertyHistoryRows = oldPropertyRows
             .Select(row => row with
             {
@@ -368,32 +362,38 @@ public sealed class UniversalActionBus
                 Version = expectedVersion,
                 // 变更时刻：本次更新发生时间。
                 UpdatedAt = DateTime.UtcNow
-            })
+            });
+
+        // 第 3.5 步：主实体旧行同样落成历史行（第 24 轮行为对齐——原 UpsertAsync 内产生，
+        // 现在显式构造随 UpdateGraph 事务插入）：TypeId = 实体元 TypeId、Value = 旧实体行值、Version = 旧实体版本。
+        var entityHistoryRow = entityRow with
+        {
+            // 历史行 Id 换新。
+            Id = Guid.NewGuid(),
+            // 角色改为历史。
+            Role = UniversalEntity.RoleHistory,
+            // 挂到被更新的当前实体行下。
+            ParentId = entityId,
+            // 变更时刻。
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        // 汇合历史行——主实体历史 + 属性行历史。
+        var historyRows = propertyHistoryRows.Concat(new[] { entityHistoryRow }).ToList();
+
+        // 第 4 步：构造新属性行——重挂 ParentId 到真实实体行 Id。
+        var newPropertyRows = decomposed
+            .Skip(1)
+            .Select(row => row with { ParentId = entityId })
             .ToList();
 
-        // 只筛待软删的属性行 Id。
-        var oldPropertyRowIds = oldPropertyRows.Select(row => row.Id).ToList();
-
-        // 有旧属性行才删。
-        if (oldPropertyRowIds.Count > 0)
-        {
-            // 单事务批量软删。
-            await _store.DeleteManyAsync(oldPropertyRowIds);
-        }
-
-        // 第 3 步：历史行 + 新属性行重挂 ParentId 后一次批量插入。
-        var newPropertyRows = propertyHistoryRows
-            .Concat(decomposed
-                .Skip(1)
-                .Select(row => row with { ParentId = entityId }))
-            .ToList();
-
-        // 有行才插。
-        if (newPropertyRows.Count > 0)
-        {
-            // 批量插入（历史行 + 新属性行）。
-            await _store.BulkInsertAsync(newPropertyRows);
-        }
+        // 第 5 步：单次 UpdateGraphAsync——主行 CAS + 旧属性行软删 + 历史行与新行插入，
+        // 事务语义由引擎分级保证（SQL 单事务 / InMemory 锁 / FASTER 顺序——见接口契约）。
+        var upsertedEntity = await _store.UpdateGraphAsync(
+            newEntityRow,
+            oldPropertyRows.Select(row => row.Id).ToList(),
+            historyRows,
+            newPropertyRows);
 
         // 返回统一信封（第 25 轮）：Id + 新版本——客户端下一次提交用。
         return BuildEnvelope(

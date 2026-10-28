@@ -272,6 +272,66 @@ public sealed class UpsertTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// 第 26 轮红测试（评审 P0）：真并发竞态——两写者经线程池同时提交，一胜一败且历史恰好一条。
+    /// </summary>
+    /// <remarks>
+    /// 与第 25 轮顺序版测试的区别：Task.Run 强制两线程真并发进入 CAS 竞争窗口
+    /// （InMemory UpsertAsync 全同步，顺序调用无让出点 = 无竞态）。
+    /// 现状（第 25 轮已翻转顺序）：败者不留历史——本测试为回归护栏。
+    /// 竞态测试的统计性诚实声明：极端线程调度下两写者可能完全串行（败者走快速比对路径，
+    /// 无幽灵窗口）——此时断言自然通过；只要任何一局出现幽灵即红。
+    /// </remarks>
+    [Fact]
+    public async Task Upsert_InMemory_ConcurrentWriters_LoserLeavesNoGhostHistory()
+    {
+        // 构造进程内存储。
+        var store = new InMemoryUniversalStore();
+
+        // 插入基线行（Version=1）。
+        var docId = Guid.NewGuid();
+        await store.BulkInsertAsync(new[] { BuildDocRow(docId, "v1") });
+
+        // 两写者经线程池同时提交——都持 Version=1。
+        var writerA = Task.Run(() => store.UpsertAsync(new[] { BuildDocRow(docId, "from-A", 1) }));
+        var writerB = Task.Run(() => store.UpsertAsync(new[] { BuildDocRow(docId, "from-B", 1) }));
+
+        // 收集结果——恰好一个成功一个冲突。
+        var winners = 0;
+        var conflicts = 0;
+
+        // 逐个分类。
+        foreach (var task in new[] { writerA, writerB })
+        {
+            // 尝试等待。
+            try
+            {
+                // 成功者。
+                await task;
+                winners++;
+            }
+            catch (ConcurrencyConflictException)
+            {
+                // 败者。
+                conflicts++;
+            }
+        }
+
+        // 一胜一败。
+        Assert.Equal(1, winners);
+        Assert.Equal(1, conflicts);
+
+        // 终态 Version=2。
+        var final = await store.GetByIdAsync(docId);
+        Assert.NotNull(final);
+        Assert.Equal(2, final!.Version);
+
+        // 幽灵历史断言：历史恰好 1 行（旧值 v1）——败者不留任何历史行。
+        var history = await store.GetHistoryAsync(docId);
+        var historyRow = Assert.Single(history);
+        Assert.Equal("v1", historyRow.Value);
+    }
+
+    /// <summary>
     /// 构造已自举的元数据缓存——PolicyDrivenStore 读 Role=5 策略所需。
     /// </summary>
     /// <param name="repository">单表仓储。</param>

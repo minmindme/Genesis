@@ -138,4 +138,24 @@ public sealed class SqlServerUniversalStore : IUniversalStore
         // 委托仓储审计查询。
         return _repository.GetByParentIdAndRoleAsync(entityId, UniversalEntity.RoleHistory, cancellationToken);
     }
+
+    /// <summary>
+    /// 图模式子图替换——委托仓储的**单事务**实现（主行 CAS + 旧行软删 + 历史行与新行插入原子生效）。
+    /// </summary>
+    /// <param name="newEntityRow">新主行（Id 为目标实体行；Version 为期望的当前版本）。</param>
+    /// <param name="oldPropertyRowIds">待软删的旧属性行 Id 集合。</param>
+    /// <param name="historyRows">预构造的历史行集合。</param>
+    /// <param name="newPropertyRows">新属性行集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>落库后的最终主行（Version 已递增）。</returns>
+    public Task<UniversalEntity> UpdateGraphAsync(
+        UniversalEntity newEntityRow,
+        IReadOnlyList<Guid> oldPropertyRowIds,
+        IReadOnlyList<UniversalEntity> historyRows,
+        IReadOnlyList<UniversalEntity> newPropertyRows,
+        CancellationToken cancellationToken = default)
+    {
+        // 委托仓储单事务实现。
+        return _repository.UpdateGraphAsync(newEntityRow, oldPropertyRowIds, historyRows, newPropertyRows, cancellationToken);
+    }
 }

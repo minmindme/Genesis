@@ -86,6 +86,17 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
     }
     catch (MetadataNotRegisteredException)
     {
+        // 第 26 轮 Dry-run 前置：先做只读校验——若为工作流命令且校验通过，
+        // 说明元数据实际齐备（异常来自运行时）——不 reload（杜绝部分写入后重试）。
+        // 数据动作（InsertData 等）无步骤概念，类型未注册的 reload 仍然合理。
+        var isWorkflowCommand = cache.GetCommand(request.Action) is not null;
+        if (isWorkflowCommand
+            && commandExecutor.ValidateCommand(request.Action, request.Args ?? new Dictionary<string, string>()).Count == 0)
+        {
+            // 校验通过——不 reload，按业务错误返回。
+            return Results.BadRequest(new { ok = false, error = "动作执行失败（元数据校验通过——非部署问题）。" });
+        }
+
         // 自愈防刷：冷却期内直接拒绝，不触发重载。
         if (DateTime.UtcNow - lastHealAt < healCooldown)
         {
