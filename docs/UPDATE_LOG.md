@@ -1,5 +1,50 @@
 # Genesis 更新日志
 
+## 2026-10-28 第 23 轮：P0 修复——CAS 穿透到 API 层 + UpdateData 不再删边（不做新功能，只修产品边界）
+
+### 方向校准（接受外部评审：三座山平的是引擎，产品还没学会使用引擎）
+
+评审逐条认领：**P0-1**（UpdateData 的 DeleteMany 全删子行——边是 Role=2 与属性行同形态，带边实体更新必丢边，是数据损失不是边界）；**P0-2**（UpdateData 用引擎内部最新 Version、GetData 不回 Version——两客户端各读 v1 先后提交都成功，引擎 CAS 承诺在 API 层被偷走）。本轮按评审指令：**两条红测试 + 两个 P0 修复 + PUT 契约化**，4/5/6（写侧 JSON 全面化/UpdateGraphAsync 单事务/图历史复制）分批下轮。
+
+### 更新内容
+
+1. **P0-1 修复（边不丢）**：`UpdateDataAsync` 图模式轨的旧子行清理按 **PropertyTypeIds 过滤**——属性行 TypeId ∈ 本类型元数据属性集才软删；边行（EdgeType 元 TypeId）与历史行原样保留。
+2. **P0-2 修复（API 级乐观锁）**：
+   - `GetData` 动态轨返回值补 **Version**（Id/TypeName/Version 三系统键齐）——客户端凭它发起带锁更新；
+   - `UpdateData` 接受可选 **ExpectedVersion**：客户端携带时不匹配即显式冲突（`InvalidOperationException`）；缺省用引擎当前版本（单客户端向后兼容）；
+   - `UpdateData` 返回 **{Id, Version}** 字典——客户端拿新版本发起下一次提交。
+3. **PUT 契约化**：UpdateData 明确为 **PUT（子图替换）而非 PATCH**——Data 必须完整对象，未包含的属性即"删除该字段"；"级联 Diff"误导命名废除。XML 契约全文更新。
+
+### 测试（先红后绿实录）
+
+- 红阶段：两条评审指定红测试**双双红了**——
+  - `Bus_UpdateData_PreservesOutgoingEdges`：Alice→Bob 建边 → UpdateData(Alice) → 出边空集合（SingleException）——边被 DeleteMany 误删实证；
+  - `Bus_UpdateData_ExpectedVersion_SecondWriterMustConflict`：A/B 各持 v1 先后提交——B 成功无异常（ThrowsException Failure: No exception was thrown）——API 层静默覆盖实证；
+- 绿阶段：**74/74 通过**（+2）——
+  - 边保留：UpdateData 后 Alice 的正向边原样在位；
+  - API 乐观锁：A（ExpectedVersion=1）成功 → B（ExpectedVersion=1）显式冲突 → 终态 Version=2、A 的属性行在位、B 的载荷从未落库；
+  - 旧测试适配：UpdateData 返回 {Id, Version} 字典后，第 21 轮两测试断言同步（Id/Version 双断言）。
+
+### 验收
+
+- `dotnet build`：0 警告 0 错误。
+- 全量回归：**74 通过 / 0 失败 / 5 跳过**。
+- 先红后绿：红 2/2 → 绿 74/74。
+
+### 诚实边界
+
+- **图模式 PUT 的完整语义**：未包含的属性字段会被删除（不是保留）——客户端必须先读全量再提交；PATCH 语义（`PatchData`）未做。
+- **快照轨 GetData 仍返回实例原样**（无 Version 键）——强类型实例由业务类定义决定；快照客户端的乐观锁依据 UpdateData 返回的 Version 链（或查行）。
+- 三步子图替换仍非单事务（本轮不动——评审 5 的 UpdateGraphAsync 留下轮）。
+- 写侧 JSON 全面化（ImportSystem 的 EdgeType/UI 行、SetStorageMode、BindCSharpType 仍 `$"..."` 拼接）留下轮——读侧双格式已兜底（旧格式行照常解析）。
+- 图历史（旧属性行不挂历史版本）与 `GetHistory` 动作未做。
+
+### 未改旁支
+
+评审 4/5/6（写侧 JSON 全面化、UpdateGraphAsync 单事务、图历史复制）、TestDatabase 残留库清理、DDL 手抄对齐（生产 DATETIME2(3)/INCLUDE 索引）、白皮书 3.0（2.0 对账表三条自相矛盾待修）、GitHub 推送（本地领先 7 提交，仍缺 remote 地址）。
+
+---
+
 ## 2026-10-28 第 22 轮：DSL 转义（第三座山）——"JSON:" 前缀双格式，分隔符裂缝根治
 
 ### 更新内容（采纳评审建议 ①：内生正确性优先）

@@ -312,8 +312,8 @@ public sealed class ActionBusTests : IAsyncLifetime
             ["Data"] = "{\"Name\":\"Alice\",\"Age\":18}"
         }));
 
-        // 第 4 步：UpdateData——Name 改值、Age 18 → 20。
-        var updatedId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        // 第 4 步：UpdateData——Name 改值、Age 18 → 20（返回 {Id, Version}——第 23 轮 PUT 契约）。
+        var updated = Assert.IsType<Dictionary<string, object>>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
         {
             // 实体行 Id。
             ["EntityId"] = aliceId.ToString(),
@@ -322,7 +322,10 @@ public sealed class ActionBusTests : IAsyncLifetime
         }));
 
         // Id 不变（更新不是重插）。
-        Assert.Equal(aliceId, updatedId);
+        Assert.Equal(aliceId, updated["Id"]);
+
+        // 返回新版本（乐观锁可见）。
+        Assert.Equal(2, updated["Version"]);
 
         // 第 5 步：GetData 读回——新值生效、旧值消失（含 Id/TypeName 自描述键）。
         var resultJson = System.Text.Json.JsonSerializer.Serialize(
@@ -398,8 +401,8 @@ public sealed class ActionBusTests : IAsyncLifetime
             ["Data"] = "{\"Title\":\"旧标题\",\"Price\":10}"
         }));
 
-        // 第 4 步：UpdateData——整快照覆盖。
-        var updatedId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        // 第 4 步：UpdateData——整快照覆盖（返回 {Id, Version}——第 23 轮 PUT 契约）。
+        var updated = Assert.IsType<Dictionary<string, object>>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
         {
             // 实体行 Id。
             ["EntityId"] = entityId.ToString(),
@@ -408,7 +411,10 @@ public sealed class ActionBusTests : IAsyncLifetime
         }));
 
         // Id 不变。
-        Assert.Equal(entityId, updatedId);
+        Assert.Equal(entityId, updated["Id"]);
+
+        // 返回新版本。
+        Assert.Equal(2, updated["Version"]);
 
         // 第 5 步：读回——新值生效、Version 递增、SNAP1 形态（真库断言）。
         // 注意：快照 JSON 默认 Unicode 转义，中文标题以 \uXXXX 形态存储——断言用 ASCII 数字载荷。
@@ -422,6 +428,211 @@ public sealed class ActionBusTests : IAsyncLifetime
         // 第 6 步：历史行留痕（主实体旧行）。
         var history = await repository.GetByTypeIdAndRoleAsync(productTypeId, UniversalEntity.RoleHistory);
         Assert.Single(history);
+    }
+
+    /// <summary>
+    /// 第 23 轮 P0-1 红测试：带出边的实体 UpdateData 后，正向边必须保留。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：图模式轨的 DeleteMany 删全部子行——边是 Role=2、ParentId=实体行，与属性行同形态，
+    /// 会被一并软删（数据损失）。修复后 DeleteMany 按 PropertyTypeIds 过滤只删属性行。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_UpdateData_PreservesOutgoingEdges()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型 + Follows 边类型（正反向类型行 + EdgeType 指令）。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        var followsTypeId = new Guid("66666666-6666-6666-6666-666666666666");
+        var followsByTypeId = new Guid("66666666-6666-6666-6666-666666666601");
+        await repository.InsertBatchAsync(new[]
+        {
+            // Student 类型 + Name 属性行。
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String"),
+
+            // Follows 正/反向边类型行（ImportSystem 命名约定：反向名 = 正向名 + "By"）。
+            new UniversalEntity(
+                Id: followsTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Follows"),
+            new UniversalEntity(
+                Id: followsByTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "FollowsBy"),
+
+            // EdgeType 指令（Role=4）。
+            new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleEngine,
+                ParentId: null,
+                Value: $"EdgeType=Follows|From={studentTypeId}|To={studentTypeId}"),
+            new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleEngine,
+                ParentId: null,
+                Value: $"EdgeType=FollowsBy|From={studentTypeId}|To={studentTypeId}")
+        });
+
+        // 第 2 步：真库存储构造总线。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：建 Alice + Bob + Alice→Bob 正向边。
+        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // Alice 载荷。
+            ["Data"] = "{\"Name\":\"Alice\"}"
+        }));
+        var bobId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // Bob 载荷。
+            ["Data"] = "{\"Name\":\"Bob\"}"
+        }));
+        await bus.ExecuteActionAsync("InsertEdge", new Dictionary<string, string>
+        {
+            // 起点。
+            ["FromId"] = aliceId.ToString(),
+            // 终点。
+            ["ToId"] = bobId.ToString(),
+            // 边类型名。
+            ["EdgeType"] = "Follows"
+        });
+
+        // 建边成功基线：Alice 下有 1 行正向边。
+        var edgesBefore = (await repository.GetByParentIdAsync(aliceId))
+            .Where(row => row.TypeId == followsTypeId && !row.IsDeleted)
+            .ToList();
+        Assert.Single(edgesBefore);
+
+        // 第 4 步：UpdateData Alice（PUT 换 Name）。
+        await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // 新载荷。
+            ["Data"] = "{\"Name\":\"Alice-2\"}"
+        });
+
+        // 第 5 步：边必须还在（修复前 DeleteMany 全删子行 → 此处空，必红）。
+        var edgesAfter = (await repository.GetByParentIdAsync(aliceId))
+            .Where(row => row.TypeId == followsTypeId && !row.IsDeleted)
+            .ToList();
+
+        // 边未丢。
+        Assert.Single(edgesAfter);
+    }
+
+    /// <summary>
+    /// 第 23 轮 P0-2 红测试：两客户端各读 v1，先后 UpdateData——第二个必须显式冲突，不得静默覆盖。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：UpdateData 不接受 ExpectedVersion（用引擎内部读到的最新 Version）——
+    /// 客户端 B 拿着过期的 v1 更新仍会成功，静默覆盖 A 的写入（引擎 CAS 承诺在 API 层被偷走）。
+    /// 修复后：ExpectedVersion 不匹配 → InvalidOperationException。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_UpdateData_ExpectedVersion_SecondWriterMustConflict()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：真库存储构造总线。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：插入 Alice——两个客户端各自读到的都是 v1。
+        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 初始载荷。
+            ["Data"] = "{\"Name\":\"base\"}"
+        }));
+
+        // 第 4 步：客户端 A 携带 ExpectedVersion=1 更新——成功。
+        await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // A 的载荷。
+            ["Data"] = "{\"Name\":\"from-A\"}",
+            // A 读到的版本。
+            ["ExpectedVersion"] = "1"
+        });
+
+        // 第 5 步：客户端 B 仍持过期 v1 更新——必须冲突（修复前忽略 ExpectedVersion → 成功覆盖，必红）。
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+            {
+                // 实体行 Id。
+                ["EntityId"] = aliceId.ToString(),
+                // B 的载荷。
+                ["Data"] = "{\"Name\":\"from-B\"}",
+                // B 读到的过期版本。
+                ["ExpectedVersion"] = "1"
+            }));
+
+        // 第 6 步：终态——A 的写入胜出，Version=2（静默覆盖不存在）。
+        // 图模式载荷在属性行——A 的 Name 落库、B 的载荷从未落库。
+        var finalRow = await repository.GetByIdAsync(aliceId);
+        Assert.NotNull(finalRow);
+        Assert.Equal(2, finalRow!.Version);
+
+        // A 的属性在位。
+        var finalChildren = await repository.GetByParentIdAsync(aliceId);
+        Assert.Contains(finalChildren, row => row.Value == "from-A");
+
+        // B 的载荷从未落库（冲突被拒）。
+        Assert.DoesNotContain(finalChildren, row => row.Value == "from-B");
     }
 
     /// <summary>

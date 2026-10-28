@@ -232,20 +232,20 @@ public sealed class UniversalActionBus
     }
 
     /// <summary>
-    /// 更新业务数据——快照轨直通 CAS 覆盖；图模式级联 Diff（主实体 Upsert + 旧属性行批量软删 + 新属性行插入）。
+    /// 更新业务数据——**PUT 语义（子图替换）**：快照轨直通 CAS 覆盖；图模式三步替换（主实体 CAS + 旧属性行批量软删 + 新属性行插入）。
     /// </summary>
     /// <remarks>
-    /// 第 21 轮（方案 A 战役一）：补齐图模式实体的"状态机变更"短板。
-    /// 快照轨：新载荷拆解为 1 行 → 对齐 Id/Version → UpsertAsync（历史行由存储层自动产生）。
-    /// 图模式轨（含强类型图与动态图——Decompose 自动分）：三步编排——
-    ///   1. 主实体 CAS Upsert（Version 校验失败 = 零残留，旧属性行仍完整）；
-    ///   2. 旧属性行 DeleteMany（单事务软删——变更历史经软删行可审计）；
-    ///   3. 新属性行重挂 ParentId 到真实实体行 Id 后 BulkInsert。
-    /// 诚实边界：三步是跨 store 调用的编排而非单事务——第 2/3 步失败会留下中间态
-    /// （概率极低：软删与插入几乎不会失败），完整原子性列为 store 层后续演进。
+    /// 第 23 轮契约化（取代第 21 轮"级联 Diff"的误导命名）：
+    ///   - **这是 PUT 不是 PATCH**——Data 必须是完整对象；未包含的属性行会被软删、未包含的属性字段即"删除该字段"。
+    ///     客户端应先 GetData 读全量、改字段、再整体提交。
+    ///   - **API 级乐观锁**：可选参数 <c>ExpectedVersion</c>——客户端从 GetData 拿到的 Version；
+    ///     不匹配（含另一客户端抢先提交）→ 显式冲突异常，静默覆盖不存在（P0-2 修复：引擎 CAS 承诺穿透到 API 层）。
+    ///     缺省时用引擎当前版本（单客户端场景向后兼容）。
+    ///   - **边不丢**（P0-1 修复）：旧子行清理按 PropertyTypeIds 过滤——只软删属性行，挂在实体下的边行原样保留。
+    /// 三步为跨 store 调用编排而非单事务（② ③ 失败概率极低），完整原子性由后续 store 层 UpdateGraphAsync 承接。
     /// </remarks>
-    /// <param name="args">参数：EntityId、Data（JSON 载荷，与 InsertData 同形态）。</param>
-    /// <returns>实体行 Id。</returns>
+    /// <param name="args">参数：EntityId、Data（完整 JSON 载荷）、ExpectedVersion（可选乐观锁）。</param>
+    /// <returns>更新结果字典：Id（实体行 Id）与 Version（更新后的乐观锁版本）。</returns>
     private async Task<object> UpdateDataAsync(IReadOnlyDictionary<string, string> args)
     {
         // 取实体行 Id。
@@ -271,6 +271,18 @@ public sealed class UniversalActionBus
             throw new InvalidOperationException($"实体行 {entityId} 不存在或不可见。");
         }
 
+        // 乐观锁版本——缺省用引擎当前版本（单客户端兼容）；客户端显式携带 ExpectedVersion 时严格校验
+        // （多客户端并发：两个读者各持 v1，先提交者胜，后提交者显式冲突——P0-2 修复）。
+        var expectedVersion = entityRow.Version;
+
+        // 客户端显式携带 ExpectedVersion 时采用之——CAS 校验交给存储层（不匹配即冲突异常）。
+        if (args.TryGetValue("ExpectedVersion", out var expectedText)
+            && int.TryParse(expectedText, out var clientExpected))
+        {
+            // 采用客户端版本。
+            expectedVersion = clientExpected;
+        }
+
         // 解析 JSON 载荷。
         var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(dataJson);
 
@@ -287,32 +299,52 @@ public sealed class UniversalActionBus
         // 快照轨：单行直通 CAS 覆盖——历史可审计，零写放大。
         if (string.Equals(_metaCache.GetStorageMode(entityRow.TypeId), "Snapshot", StringComparison.Ordinal))
         {
-            // 对齐真实 Id 与当前 Version——乐观锁更新。
-            var snapshotRow = decomposed[0] with { Id = entityId, Version = entityRow.Version };
+            // 对齐真实 Id 与客户端期望版本——乐观锁更新。
+            var snapshotRow = decomposed[0] with { Id = entityId, Version = expectedVersion };
 
             // CAS 覆盖。
             var upsertedSnapshot = (await _store.UpsertAsync(new[] { snapshotRow })).Single();
 
-            // 返回实体行 Id。
-            return upsertedSnapshot.Id;
+            // 返回更新结果（Id + 新版本——客户端下一次提交用）。
+            return new Dictionary<string, object>
+            {
+                // 实体行 Id。
+                ["Id"] = upsertedSnapshot.Id,
+                // 更新后的乐观锁版本。
+                ["Version"] = upsertedSnapshot.Version
+            };
         }
 
-        // ===== 图模式轨：三步级联 Diff =====
+        // ===== 图模式轨：三步子图替换（PUT）=====
 
-        // 第 1 步：主实体 CAS Upsert——对齐真实 Id 与当前 Version。
-        var newEntityRow = decomposed[0] with { Id = entityId, Version = entityRow.Version };
+        // 第 1 步：主实体 CAS Upsert——对齐真实 Id 与客户端期望版本。
+        var newEntityRow = decomposed[0] with { Id = entityId, Version = expectedVersion };
 
         // CAS 覆盖主实体。
         var upsertedEntity = (await _store.UpsertAsync(new[] { newEntityRow })).Single();
 
-        // 第 2 步：旧属性行批量软删（单事务）——旧值经软删行可审计。
+        // 第 2 步：旧属性行批量软删（单事务）——**只删属性行，边不动**（P0-1 修复）。
+        // 区分依据：属性行 TypeId ∈ 本类型元数据的 PropertyTypeIds.Values；
+        // 边行 TypeId 是 EdgeType 元 TypeId（不在属性集内），历史行 Role=6 已被指针追逐排除。
+        var metaType = _metaCache.GetTypeByTypeId(entityRow.TypeId);
+
+        // 本类型的属性元 TypeId 集合。
+        var propertyTypeIds = metaType?.PropertyTypeIds.Values.ToHashSet() ?? new HashSet<Guid>();
+
+        // 指针追逐取全部子行。
         var oldChildren = await _store.GetByParentIdAsync(entityId);
 
-        // 有旧子行才删。
-        if (oldChildren.Count > 0)
+        // 只筛属性行——边行原样保留。
+        var oldPropertyRowIds = oldChildren
+            .Where(row => propertyTypeIds.Contains(row.TypeId))
+            .Select(row => row.Id)
+            .ToList();
+
+        // 有旧属性行才删。
+        if (oldPropertyRowIds.Count > 0)
         {
             // 单事务批量软删。
-            await _store.DeleteManyAsync(oldChildren.Select(row => row.Id).ToList());
+            await _store.DeleteManyAsync(oldPropertyRowIds);
         }
 
         // 第 3 步：新属性行重挂 ParentId 后插入——Decompose 生成的 ParentId 指向拆解时的临时实体行 Id。
@@ -328,8 +360,14 @@ public sealed class UniversalActionBus
             await _store.BulkInsertAsync(newPropertyRows);
         }
 
-        // 返回实体行 Id。
-        return upsertedEntity.Id;
+        // 返回更新结果（Id + 新版本——客户端下一次提交用）。
+        return new Dictionary<string, object>
+        {
+            // 实体行 Id。
+            ["Id"] = upsertedEntity.Id,
+            // 更新后的乐观锁版本。
+            ["Version"] = upsertedEntity.Version
+        };
     }
 
     /// <summary>
@@ -439,17 +477,19 @@ public sealed class UniversalActionBus
         // 万物容器的动态属性不被 System.Text.Json 枚举——转为属性字典视图再返回。
         // 第 20 轮半修：字典视图补 Id 与 TypeName——通用 API 的返回值必须能自证身份，
         // agent 拿到它才能发起后续操作（DeleteData/InsertEdge 都需要实体行 Id）。
+        // 第 23 轮 P0-2：补 Version——客户端凭它做 UpdateData 的 ExpectedVersion 乐观锁（两读者一胜一败）。
         return assembled is UniversalObject universalObject
-            ? BuildSelfDescribingView(universalObject)
+            ? BuildSelfDescribingView(universalObject, entityRow.Version)
             : assembled;
     }
 
     /// <summary>
-    /// 构造自描述属性视图——动态属性字典 + 实体行 Id 与类型名。
+    /// 构造自描述属性视图——动态属性字典 + 实体行 Id、类型名与乐观锁版本。
     /// </summary>
     /// <param name="universalObject">组装完成的万物容器。</param>
-    /// <returns>可 JSON 序列化的属性字典（含 Id/TypeName 两个身份键）。</returns>
-    private static Dictionary<string, object?> BuildSelfDescribingView(UniversalObject universalObject)
+    /// <param name="version">实体行当前乐观锁版本（UpdateData 的 ExpectedVersion 依据）。</param>
+    /// <returns>可 JSON 序列化的属性字典（含 Id/TypeName/Version 三个系统键）。</returns>
+    private static Dictionary<string, object?> BuildSelfDescribingView(UniversalObject universalObject, int version)
     {
         // 复制属性字典——不污染容器内部状态。
         var view = new Dictionary<string, object?>(universalObject.GetProperties(), StringComparer.Ordinal);
@@ -459,6 +499,9 @@ public sealed class UniversalActionBus
 
         // 身份键：实体类型名。
         view["TypeName"] = universalObject.TypeName;
+
+        // 乐观锁版本——客户端提交更新时作为 ExpectedVersion 回传。
+        view["Version"] = version;
 
         // 返回自描述视图。
         return view;
