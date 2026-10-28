@@ -109,4 +109,19 @@ public interface IUniversalStore
     Task<int> DeleteManyAsync(
         IReadOnlyList<Guid> ids,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 实体审计历史链——取全部 ParentId 指向该实体的 Role=6 历史行（第 24 轮）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="GetByParentIdAsync"/> 的分工：后者是活数据语义（排除历史行），
+    /// 本方法是审计语义（只取历史行）。快照历史行 Value=旧 SNAP1 包；图模式历史行 Value=旧属性值
+    /// （TypeId 保留属性元 TypeId，可反查属性名）。
+    /// </remarks>
+    /// <param name="entityId">被审计的实体行 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>历史行集合，按更新时间升序（时间线）。</returns>
+    Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
+        Guid entityId,
+        CancellationToken cancellationToken = default);
 }

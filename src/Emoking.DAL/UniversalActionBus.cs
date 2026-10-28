@@ -32,6 +32,9 @@ public sealed class UniversalActionBus
     // 内置业务动作：更新业务数据（快照轨 CAS 覆盖 / 图模式级联 Diff）。
     public const string UpdateDataAction = "UpdateData";
 
+    // 内置系统动作：读取实体审计历史链（Role=6 历史行，第 24 轮）。
+    public const string GetHistoryAction = "GetHistory";
+
     // 内置业务动作：创建同构双向边（按边类型名查正反向 TypeId）。
     public const string InsertEdgeAction = "InsertEdge";
 
@@ -116,12 +119,15 @@ public sealed class UniversalActionBus
             // 更新业务数据。
             UpdateDataAction => await UpdateDataAsync(args),
 
+            // 读取审计历史链。
+            GetHistoryAction => await GetHistoryAsync(args),
+
             // 创建双向边。
             InsertEdgeAction => await InsertEdgeAsync(args),
 
             // 无法识别的动作。
             _ => throw new InvalidOperationException(
-                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}/{UpdateDataAction}/{InsertEdgeAction}）。")
+                $"动作 '{action}' 无法识别——它既不是 Role=7 工作流命令，也不是内置业务动作（{InsertDataAction}/{GetDataAction}/{GetSystemSchemaAction}/{DeleteDataAction}/{UpdateDataAction}/{GetHistoryAction}/{InsertEdgeAction}）。")
         };
     }
 
@@ -334,11 +340,28 @@ public sealed class UniversalActionBus
         // 指针追逐取全部子行。
         var oldChildren = await _store.GetByParentIdAsync(entityId);
 
-        // 只筛属性行——边行原样保留。
-        var oldPropertyRowIds = oldChildren
+        // 只筛属性行——边行原样保留（保留完整行对象，历史复制要用）。
+        var oldPropertyRows = oldChildren
             .Where(row => propertyTypeIds.Contains(row.TypeId))
-            .Select(row => row.Id)
             .ToList();
+
+        // 第 2.5 步：旧属性行复制为 Role=6 历史行（第 24 轮评审 6——system as history 对图模式完整兑现）：
+        // Id 换新、Role 改历史、ParentId 挂到当前实体行、TypeId/Value/Version 原样保留——
+        // 审计链经 GetHistory 动作读取，属性名经 TypeId 反查还原。
+        var propertyHistoryRows = oldPropertyRows
+            .Select(row => row with
+            {
+                // 历史行 Id 换新。
+                Id = Guid.NewGuid(),
+                // 角色改为历史。
+                Role = UniversalEntity.RoleHistory,
+                // 挂到被更新的当前实体行下。
+                ParentId = entityId
+            })
+            .ToList();
+
+        // 只筛待软删的属性行 Id。
+        var oldPropertyRowIds = oldPropertyRows.Select(row => row.Id).ToList();
 
         // 有旧属性行才删。
         if (oldPropertyRowIds.Count > 0)
@@ -347,16 +370,17 @@ public sealed class UniversalActionBus
             await _store.DeleteManyAsync(oldPropertyRowIds);
         }
 
-        // 第 3 步：新属性行重挂 ParentId 后插入——Decompose 生成的 ParentId 指向拆解时的临时实体行 Id。
-        var newPropertyRows = decomposed
-            .Skip(1)
-            .Select(row => row with { ParentId = entityId })
+        // 第 3 步：历史行 + 新属性行重挂 ParentId 后一次批量插入。
+        var newPropertyRows = propertyHistoryRows
+            .Concat(decomposed
+                .Skip(1)
+                .Select(row => row with { ParentId = entityId }))
             .ToList();
 
-        // 有新子行才插。
+        // 有行才插。
         if (newPropertyRows.Count > 0)
         {
-            // 批量插入新属性行。
+            // 批量插入（历史行 + 新属性行）。
             await _store.BulkInsertAsync(newPropertyRows);
         }
 
@@ -368,6 +392,60 @@ public sealed class UniversalActionBus
             // 更新后的乐观锁版本。
             ["Version"] = upsertedEntity.Version
         };
+    }
+
+    /// <summary>
+    /// 读取实体审计历史链——Role=6 历史行按时间线排序，属性名经元数据反查翻译。
+    /// </summary>
+    /// <remarks>
+    /// 第 24 轮（评审 6）：审计能力从"raw SQL 的事"变成"引擎的事"。
+    /// 快照历史行 Value=旧 SNAP1 包（Property 为 null）；图模式历史行 Value=旧属性值，
+    /// Property 经 TypeId 反查还原属性名。加密策略下历史行由装饰器透明解密。
+    /// </remarks>
+    /// <param name="args">参数：EntityId。</param>
+    /// <returns>审计条目列表：Property（属性名，快照行为 null）/Value/Version/TypeId/ChangedAt。</returns>
+    private async Task<object> GetHistoryAsync(IReadOnlyDictionary<string, string> args)
+    {
+        // 取实体行 Id。
+        var entityIdText = RequireArg(args, "EntityId");
+
+        // 解析 Guid。
+        if (!Guid.TryParse(entityIdText, out var entityId))
+        {
+            // 抛出格式异常。
+            throw new InvalidOperationException($"EntityId '{entityIdText}' 不是合法的 Guid。");
+        }
+
+        // 取历史行（按时间线升序）。
+        var historyRows = await _store.GetHistoryAsync(entityId);
+
+        // 逐行翻译为审计条目。
+        var entries = new List<Dictionary<string, object?>>(historyRows.Count);
+
+        // 遍历翻译。
+        foreach (var row in historyRows)
+        {
+            // 属性名反查——快照历史行 TypeId 是实体元 TypeId，反查为 null（客户端按 SNAP1 识别）。
+            var propertyName = _metaCache.GetPropertyNameByTypeId(row.TypeId);
+
+            // 组装审计条目。
+            entries.Add(new Dictionary<string, object?>
+            {
+                // 属性名（快照行为 null）。
+                ["Property"] = propertyName,
+                // 旧值（快照行为旧 SNAP1 包）。
+                ["Value"] = row.Value,
+                // 旧版本。
+                ["Version"] = row.Version,
+                // 行类型指针（供高级消费方反查）。
+                ["TypeId"] = row.TypeId,
+                // 变更时间。
+                ["ChangedAt"] = row.UpdatedAt
+            });
+        }
+
+        // 返回审计链。
+        return entries;
     }
 
     /// <summary>

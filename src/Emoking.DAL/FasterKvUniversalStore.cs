@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FASTER.core;
@@ -482,6 +483,54 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
 
         // 返回命中数。
         return deleted;
+    }
+
+    /// <summary>
+    /// 实体审计历史链——迭代器全扫描过滤 Role=6 历史行（FASTER 无二级索引，诚实代价）。
+    /// </summary>
+    /// <param name="entityId">被审计的实体行 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>历史行集合，按更新时间升序。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
+        Guid entityId,
+        CancellationToken cancellationToken = default)
+    {
+        // 打开会话。
+        using var session = NewSession();
+
+        // 结果集。
+        var results = new List<UniversalEntity>();
+
+        // 全量迭代。
+        using (var iterator = session.Iterate())
+        {
+            // 逐条推进。
+            while (iterator.GetNext(out var recordInfo, out var key, out var value))
+            {
+                // 已删除记录跳过。
+                if (recordInfo.Tombstone)
+                {
+                    // 跳过。
+                    continue;
+                }
+
+                // 解包。
+                var row = UniversalEntityCodec.Unpack(value);
+
+                // 历史行命中：未删除、ParentId 指向被审计实体、Role=6。
+                if (!row.IsDeleted && row.ParentId == entityId && row.Role == UniversalEntity.RoleHistory)
+                {
+                    // 加入结果集。
+                    results.Add(row);
+                }
+            }
+        }
+
+        // 时间线排序。
+        var ordered = results.OrderBy(row => row.UpdatedAt).ToList();
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(ordered);
     }
 
     /// <summary>

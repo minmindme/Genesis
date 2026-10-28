@@ -1,5 +1,58 @@
 # Genesis 更新日志
 
+## 2026-10-28 第 24 轮：评审 4+6——写侧 JSON 全面化 + 图模式历史复制与 GetHistory（system as history 完整兑现）
+
+### 更新内容（采纳评审建议：4 与 6 本轮，5 与白皮书 3.0 下轮收官）
+
+**战役一（评审 4）：写侧 JSON 全面化——"永不半解析"从读侧走到写侧**
+- Executor 全部 6 处 `$"..."` 拼接改走 `MetadataJson.EncodePairs`：
+  - `SetStorageMode` 步骤（StorageMode 含分隔符自动 JSON 化）；
+  - `BindCSharpType` 步骤；
+  - `ImportSystem` 的 StorageMode 指令、**EdgeType 指令（正/反向）**、**UI 行**（UI 名/Fields 含 `|` 不再写裂）；
+- 编码路由语义：仅 `|` `=` 触发 JSON 化，`:` `,` 由旧格式合法承载（Fields="Title:Input" 保持可读旧格式）；含分隔符值自动 JSON 化；
+- 存量兼容：EncodePairs 对纯值产出与旧拼接完全一致——全部既有测试零改动通过。
+
+**战役二（评审 6）：图模式历史复制 + GetHistory——审计能力成为引擎的事**
+- **历史复制**：`UpdateDataAsync` 图模式轨新增第 2.5 步——旧属性行复制为 Role=6 历史行（Id 换新、ParentId 挂当前实体行、**TypeId/Value/Version 原样保留**——属性名可反查、旧值可读），与新版属性行一次批量插入；
+- **查询通道**：`IUniversalStore.GetHistoryAsync(entityId)` 新接口——
+  - Repository 新增 `GetByParentIdAndRoleAsync`（显式 Role 过滤 + UpdatedAt 时间线排序，与活数据语义的 GetByParentIdAsync 分工）；
+  - 三引擎实现（SqlServer 参数化 SQL / InMemory+FASTER 全扫过滤——FASTER 无二级索引诚实代价）；
+  - `PolicyDrivenStore.GetHistoryAsync` 逐行透明解密（历史行在加密策略下是密文）；
+- **GetHistory 总线动作**：EntityId → 审计条目列表 `{Property, Value, Version, TypeId, ChangedAt}`——图模式条目带属性名翻译（TypeId 反查），快照条目 Value=旧 SNAP1 包（Property=null）。
+
+### 测试（先红后绿实录）
+
+- 红阶段：三条评审指向测试全红——
+  - `Executor_SetStorageMode_JsonEncodesSeparatorValues`：Mode="Fast|Mode" 半解析为 "Fast"；
+  - `Executor_ImportSystem_UiRowWithSeparator_KeepsIntact`：UI 名 "Doc|Form" 被切裂；
+  - `Bus_UpdateData_GraphMode_WritesPropertyHistory_GetHistoryReadsIt`：无历史复制（历史行空）+ GetHistory 动作不存在；
+- 绿阶段：**77/77 通过**（+3）——三条全绿，全部既有测试零破坏（含 InsertSystem 常规 UI/边行）。
+
+### 验收
+
+- `dotnet build`：0 警告 0 错误。
+- 全量回归：**77 通过 / 0 失败 / 5 跳过**。
+- 先红后绿：红 3/3 → 绿 77/77。
+
+### 排障实录
+
+| BUG | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| B39 | ImportSystem 指令行 CS1026 缺右括号 | EncodePairs 替换时括号层数少一层（Add(UniversalEntity(EncodePairs(dict))) 四层） | 补齐 `})));` |
+
+### 诚实边界
+
+- GetHistory 的属性名翻译依赖 MetaCache 现 snapshot——**属性元被删后**历史条目 Property 回退为 null（TypeId 仍在，可手工反查）。
+- FASTER 的历史查询与既有查询同为 O(n) 全扫描（无二级索引诚实代价）。
+- UpdateData 三步（含历史复制）仍非单事务——评审 5 的 UpdateGraphAsync 留第 25 轮。
+- 图模式 PUT 语义不变：未包含的属性即删除（历史行留旧值）。
+
+### 未改旁支
+
+评审 5（UpdateGraphAsync 单事务）、白皮书 3.0（对账表自洽性修复）、TestDatabase 残留库清理、DDL 手抄对齐、GitHub 推送（本地领先 8 提交，仍缺 remote 地址）、SM4、雪花 ID。
+
+---
+
 ## 2026-10-28 第 23 轮：P0 修复——CAS 穿透到 API 层 + UpdateData 不再删边（不做新功能，只修产品边界）
 
 ### 方向校准（接受外部评审：三座山平的是引擎，产品还没学会使用引擎）

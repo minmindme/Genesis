@@ -223,6 +223,37 @@ public sealed class PolicyDrivenStore : IUniversalStore
     }
 
     /// <summary>
+    /// 实体审计历史链——委托内层取历史行后逐行解密（历史行在加密策略下是密文）。
+    /// </summary>
+    /// <param name="entityId">被审计的实体行 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>本租户可见的明文历史行集合。</returns>
+    public async Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
+        Guid entityId,
+        CancellationToken cancellationToken = default)
+    {
+        // 从内层取原始历史行（密文形态）。
+        var rows = await _inner.GetHistoryAsync(entityId, cancellationToken);
+
+        // 逐行还原。
+        var visible = new List<UniversalEntity>(rows.Count);
+
+        // 遍历。
+        foreach (var row in rows)
+        {
+            // 尝试还原——成功才可见（与子图预取同语义）。
+            if (TryRestoreValue(row.Value, out var plain))
+            {
+                // 加入可见集。
+                visible.Add(row with { Value = plain });
+            }
+        }
+
+        // 返回明文历史链。
+        return visible;
+    }
+
+    /// <summary>
     /// 限流校验——行数超过 Role=5 RateLimit 策略上限时拒绝。
     /// </summary>
     /// <param name="rowCount">本次写入的行数。</param>

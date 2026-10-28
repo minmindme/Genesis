@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -299,6 +300,26 @@ public sealed class InMemoryUniversalStore : IUniversalStore
 
         // 返回命中数。
         return deleted;
+    }
+
+    /// <summary>
+    /// 实体审计历史链——全扫描过滤 Role=6 历史行（ParentId 指向被审计实体）。
+    /// </summary>
+    /// <param name="entityId">被审计的实体行 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>历史行集合，按更新时间升序。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
+        Guid entityId,
+        CancellationToken cancellationToken = default)
+    {
+        // 全扫描过滤——审计语义（只取 Role=6）。
+        var results = _rows.Values
+            .Where(row => row.ParentId == entityId && row.Role == UniversalEntity.RoleHistory && !row.IsDeleted)
+            .OrderBy(row => row.UpdatedAt)
+            .ToList();
+
+        // 返回只读结果。
+        return Task.FromResult<IReadOnlyList<UniversalEntity>>(results);
     }
 
     /// <summary>

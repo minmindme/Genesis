@@ -280,13 +280,19 @@ public sealed class UniversalCommandExecutor
         // 取模式参数。
         var mode = RequireArg(context, "Mode");
 
-        // 写入指令行。
+        // 写入指令行——EncodePairs 自动路由（mode 含分隔符时 JSON 化，第 24 轮写侧全面化）。
         var instructionRow = new UniversalEntity(
             Id: Guid.NewGuid(),
             TypeId: MetaCache.MetaEngineTypeId,
             Role: UniversalEntity.RoleEngine,
             ParentId: null,
-            Value: $"StorageMode={mode}|TargetTypeId={context.NewTypeId}");
+            Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+            {
+                // 存储模式。
+                ["StorageMode"] = mode,
+                // 作用目标实体。
+                ["TargetTypeId"] = context.NewTypeId.ToString()
+            }));
 
         // 落库。
         await _repository.InsertBatchAsync(new[] { instructionRow });
@@ -310,7 +316,13 @@ public sealed class UniversalCommandExecutor
             TypeId: MetaCache.MetaEngineTypeId,
             Role: UniversalEntity.RoleEngine,
             ParentId: null,
-            Value: $"CSharpType={csharpType}|TargetTypeId={context.NewTypeId}");
+            Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+            {
+                // 类名绑定。
+                ["CSharpType"] = csharpType,
+                // 作用目标实体。
+                ["TargetTypeId"] = context.NewTypeId.ToString()
+            }));
 
         // 落库。
         await _repository.InsertBatchAsync(new[] { instructionRow });
@@ -399,7 +411,13 @@ public sealed class UniversalCommandExecutor
                     TypeId: MetaCache.MetaEngineTypeId,
                     Role: UniversalEntity.RoleEngine,
                     ParentId: null,
-                    Value: $"StorageMode={entity.Mode}|TargetTypeId={typeId}"));
+                    Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+                    {
+                        // 存储模式。
+                        ["StorageMode"] = entity.Mode,
+                        // 作用目标实体。
+                        ["TargetTypeId"] = typeId.ToString()
+                    })));
             }
         }
 
@@ -437,13 +455,19 @@ public sealed class UniversalCommandExecutor
                 ParentId: null,
                 Value: reverseName));
 
-            // 正向 EdgeType 指令。
+            // 正向 EdgeType 指令——EncodePairs 自动路由（边名含分隔符时 JSON 化）。
             context.PendingRows.Add(new UniversalEntity(
                 Id: Guid.NewGuid(),
                 TypeId: MetaCache.MetaEngineTypeId,
                 Role: UniversalEntity.RoleEngine,
                 ParentId: null,
-                Value: $"EdgeType={edge.Name}|TargetTypeId={forwardTypeId}"));
+                Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+                {
+                    // 边类型名。
+                    ["EdgeType"] = edge.Name,
+                    // 作用目标边类型。
+                    ["TargetTypeId"] = forwardTypeId.ToString()
+                })));
 
             // 反向 EdgeType 指令。
             context.PendingRows.Add(new UniversalEntity(
@@ -451,7 +475,13 @@ public sealed class UniversalCommandExecutor
                 TypeId: MetaCache.MetaEngineTypeId,
                 Role: UniversalEntity.RoleEngine,
                 ParentId: null,
-                Value: $"EdgeType={reverseName}|TargetTypeId={reverseTypeId}"));
+                Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+                {
+                    // 反向边类型名。
+                    ["EdgeType"] = reverseName,
+                    // 作用目标边类型。
+                    ["TargetTypeId"] = reverseTypeId.ToString()
+                })));
 
             // 记录正反向 TypeId——InsertEdge 按名称约定查找。
             typeIds[edge.Name] = forwardTypeId;
@@ -461,13 +491,25 @@ public sealed class UniversalCommandExecutor
         // 第三段：UI Schema。
         foreach (var ui in definition.Uis ?? new List<UiDef>())
         {
-            // Role=8 行。
+            // Role=8 行——EncodePairs 自动路由（UI 名/字段值含分隔符时 JSON 化）。
             context.PendingRows.Add(new UniversalEntity(
                 Id: Guid.NewGuid(),
                 TypeId: MetaCache.MetaEngineTypeId,
                 Role: UniversalEntity.RoleUi,
                 ParentId: null,
-                Value: $"UI={ui.Name}|Type=Form|Entity={ui.Entity}|Fields={ui.Fields}|Action={ui.Action}"));
+                Value: MetadataJson.EncodePairs(new Dictionary<string, string>
+                {
+                    // UI 名。
+                    ["UI"] = ui.Name,
+                    // 控件类型。
+                    ["Type"] = "Form",
+                    // 绑定实体。
+                    ["Entity"] = ui.Entity,
+                    // 字段描述。
+                    ["Fields"] = ui.Fields,
+                    // 提交动作。
+                    ["Action"] = ui.Action
+                })));
         }
 
         // 整包落库。

@@ -636,6 +636,86 @@ public sealed class ActionBusTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// 第 24 轮红测试（评审 6）：图模式更新必须复制旧属性行为 Role=6 历史行，GetHistory 动作返回审计链。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：图模式历史行是空壳——主实体历史行 Value=null，旧属性行只软删不挂历史版本，
+    /// "system as history" 只对快照成立；GetHistory 动作不存在。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_UpdateData_GraphMode_WritesPropertyHistory_GetHistoryReadsIt()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：真库存储构造总线。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：插入 Alice → 更新为 Alice-2。
+        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 初始载荷。
+            ["Data"] = "{\"Name\":\"Alice\"}"
+        }));
+        await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // 新载荷。
+            ["Data"] = "{\"Name\":\"Alice-2\"}"
+        });
+
+        // 第 4 步：旧属性值已复制为 Role=6 历史行（ParentId 指向当前行，Value=旧值，TypeId=属性元 TypeId）。
+        // 指针追逐排除 Role=6——用 repository 直查历史行。
+        var historyRows = await repository.GetByParentIdAndRoleAsync(aliceId, UniversalEntity.RoleHistory);
+
+        // 旧值 "Alice" 留痕（修复前无历史复制，必红）。
+        var nameHistory = historyRows.Where(row => row.Value == "Alice").ToList();
+        Assert.Single(nameHistory);
+
+        // 历史行挂在当前实体下且保留属性元 TypeId（可反查属性名）。
+        Assert.Equal(aliceId, nameHistory[0].ParentId);
+
+        // 第 5 步：GetHistory 动作返回审计链（修复前动作不存在，必红）。
+        var historyJson = System.Text.Json.JsonSerializer.Serialize(
+            await bus.ExecuteActionAsync("GetHistory", new Dictionary<string, string> { ["EntityId"] = aliceId.ToString() }),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                // 中文原样输出。
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+
+        // 审计链含属性名翻译与旧值。
+        Assert.Contains("Name", historyJson);
+        Assert.Contains("Alice", historyJson);
+    }
+
+    /// <summary>
     /// 无法识别的动作显式失败——总线不猜意图。
     /// </summary>
     [Fact]

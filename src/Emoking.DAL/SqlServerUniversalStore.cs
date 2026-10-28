@@ -124,4 +124,18 @@ public sealed class SqlServerUniversalStore : IUniversalStore
         // 委托仓储单事务批量软删。
         return _repository.SoftDeleteManyAsync(ids, cancellationToken);
     }
+
+    /// <summary>
+    /// 实体审计历史链——委托仓储的 ParentId+Role 查询（Role=6 历史行）。
+    /// </summary>
+    /// <param name="entityId">被审计的实体行 Id。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>历史行集合，按更新时间升序。</returns>
+    public Task<IReadOnlyList<UniversalEntity>> GetHistoryAsync(
+        Guid entityId,
+        CancellationToken cancellationToken = default)
+    {
+        // 委托仓储审计查询。
+        return _repository.GetByParentIdAndRoleAsync(entityId, UniversalEntity.RoleHistory, cancellationToken);
+    }
 }

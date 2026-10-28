@@ -649,6 +649,61 @@ public sealed class UniversalEntityRepository
     }
 
     /// <summary>
+    /// 按 ParentId + Role 取子行——历史链审计查询专用（第 24 轮）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="GetByParentIdAsync"/> 的区别：本方法按显式 Role 过滤（如 Role=6 历史行），
+    /// 后者固定排除历史行（活数据语义）。审计链走本方法。
+    /// </remarks>
+    /// <param name="parentId">父节点 Id（被审计的实体行）。</param>
+    /// <param name="role">角色常量（审计场景为 6=History）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>匹配的行集合，按 UpdatedAt 升序（时间线）。</returns>
+    public async Task<IReadOnlyList<UniversalEntity>> GetByParentIdAndRoleAsync(
+        Guid parentId,
+        byte role,
+        CancellationToken cancellationToken = default)
+    {
+        // 拿到已打开的连接。
+        using var connection = _dbContext.CreateConnection();
+
+        // 构造参数化查询——ParentId + Role + IsDeleted 过滤，时间线排序。
+        const string sql = @"
+            SELECT [Id], [TypeId], [Role], [ParentId], [Value], [Version], [IsDeleted], [CreatedAt], [UpdatedAt]
+            FROM [dbo].[UniversalEntity]
+            WHERE [ParentId] = @ParentId AND [Role] = @Role AND [IsDeleted] = 0
+            ORDER BY [UpdatedAt], [Id]";
+
+        // 构造 SqlCommand。
+        await using var command = connection.CreateCommand();
+
+        // 写入 SQL。
+        command.CommandText = sql;
+
+        // 绑定 ParentId。
+        command.Parameters.AddWithValue("@ParentId", parentId);
+
+        // 绑定 Role。
+        command.Parameters.AddWithValue("@Role", role);
+
+        // 执行 Reader。
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        // 收集结果。
+        var results = new List<UniversalEntity>();
+
+        // 逐行读取映射。
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            // 加入结果集。
+            results.Add(MapReader(reader));
+        }
+
+        // 返回只读集合。
+        return results;
+    }
+
+    /// <summary>
     /// 按 Id 软删除一行——只置 IsDeleted = 1，物理行保留。
     /// </summary>
     /// <param name="id">待软删除的行 Id。</param>

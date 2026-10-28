@@ -275,4 +275,97 @@ public sealed class MetadataJsonTests : IAsyncLifetime
         // DataType 显式声明。
         Assert.Equal("String", metaType.PropertyDataTypes["Ratio:Base"]);
     }
+
+    /// <summary>
+    /// 第 24 轮红测试（评审 4）：写侧 JSON 全面化——SetStorageMode 步骤对含竖线的模式值自动 JSON 编码。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：步骤落库仍 $ 拼接 "StorageMode={mode}|..."——mode 含竖线时半解析为 "Fast"。
+    /// 修复后 EncodePairs 自动 JSON 化，往返无损。
+    /// </remarks>
+    [Fact]
+    public async Task Executor_SetStorageMode_JsonEncodesSeparatorValues()
+    {
+        // 第 1 步：清池 + 言出 SetMode 命令定义（Role=7，步骤只有 SetStorageMode）。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleCommand,
+                ParentId: null,
+                Value: "Command=SetMode|Args=TypeName,Mode|Steps=SetStorageMode")
+        });
+
+        // 第 2 步：自举 + 执行器。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var executor = new UniversalCommandExecutor(repository, cache, ".");
+
+        // 第 3 步：执行——Mode 值含竖线（旧格式拼接必然半解析）。
+        await executor.RunAsync(new[]
+        {
+            "run",
+            "SetMode",
+            "TypeName=Doc",
+            "Mode=Fast|Mode"
+        });
+
+        // 第 4 步：重载后断言——存储模式完整读回（修复前此处只拿到 "Fast"，必红）。
+        cache = new MetaCache(repository);
+        await cache.LoadAsync();
+
+        // SetStorageMode 未配 InsertTypeMeta 时 TargetTypeId 为空 Guid——按空 Guid 查指令。
+        Assert.Equal("Fast|Mode", cache.GetStorageMode(Guid.Empty));
+    }
+
+    /// <summary>
+    /// 第 24 轮红测试（评审 4）：ImportSystem 的 UI 行对含竖线的 UI 名自动 JSON 编码。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：UI 行 $ 拼接 "UI={name}|Type=Form|..."——UI 名含竖线时半解析。
+    /// 修复后 EncodePairs 编码，GetUiSchemas 完整读回。
+    /// </remarks>
+    [Fact]
+    public async Task Executor_ImportSystem_UiRowWithSeparator_KeepsIntact()
+    {
+        // 第 1 步：清池 + 言出 ImportSystem 命令定义。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: Guid.NewGuid(),
+                TypeId: MetaCache.MetaEngineTypeId,
+                Role: UniversalEntity.RoleCommand,
+                ParentId: null,
+                Value: "Command=ImportSys|Args=SystemJson|Steps=ImportSystem;ReloadCache")
+        });
+
+        // 第 2 步：自举 + 执行器。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var executor = new UniversalCommandExecutor(repository, cache, ".");
+
+        // 第 3 步：导入——UI 名与字段值含竖线（SystemJson 为字符串参数，内嵌 JSON 转义引号）。
+        await executor.RunAsync(new[]
+        {
+            "run",
+            "ImportSys",
+            "SystemJson={\"Entities\":[{\"Name\":\"Doc\",\"Mode\":\"Graph\",\"Props\":\"Title:String\"}],\"EdgeTypes\":[],\"Uis\":[{\"Name\":\"Doc|Form\",\"Entity\":\"Doc\",\"Fields\":\"Title:Input\",\"Action\":\"InsertData\"}]}"
+        });
+
+        // 第 4 步：重载后断言——UI 名完整（修复前 "Doc|Form" 被切成 UI=Doc + 未知段，必红）。
+        cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var uis = cache.GetUiSchemas();
+
+        // 完整 UI 名在案。
+        Assert.True(uis.ContainsKey("Doc|Form"), $"UI 名应完整为 'Doc|Form'，实际：{string.Join("/", uis.Keys)}");
+
+        // 字段无损。
+        Assert.Equal("InsertData", uis["Doc|Form"]["Action"]);
+    }
 }
