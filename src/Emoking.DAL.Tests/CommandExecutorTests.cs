@@ -157,7 +157,7 @@ public sealed class CommandExecutorTests : IAsyncLifetime
         var executor = new UniversalCommandExecutor(diskRepository, cache);
 
         // 未注册命令抛错。
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<MetadataNotRegisteredException>(
             () => executor.RunAsync(new[] { "run", "CreateOrder" }));
 
         // 异常消息点明命令未注册。
@@ -186,7 +186,7 @@ public sealed class CommandExecutorTests : IAsyncLifetime
         var executor = new UniversalCommandExecutor(diskRepository, cache);
 
         // 第 2 步：执行——TeleportToMars 步骤不存在，显式失败。
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<MetadataNotRegisteredException>(
             () => executor.RunAsync(new[] { "run", "BadFlow", "TypeName=Whatever" }));
 
         // 异常消息点明哪个步骤未注册。

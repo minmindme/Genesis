@@ -69,7 +69,7 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
         }
     }
 
-    // 交给意图总线——遇"未注册"类错误时自愈：热重载池中数据后重试一次（带冷却防刷）。
+    // 交给意图总线——失败按异常类型路由（第 25 轮自愈收窄：只有部署/配置问题触发 reload）。
     try
     {
         // 执行动作。
@@ -78,7 +78,13 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
         // 返回结果。
         return Results.Ok(new { ok = true, result });
     }
-    catch (InvalidOperationException)
+    catch (ConcurrencyConflictException ex)
+    {
+        // 并发冲突——正常业务语义（两读者一胜一败），409 直接返回，绝不 reload 重试
+        // （重试必然再次冲突；非幂等动作重试会重复写——评审 P0：网关自愈收窄）。
+        return Results.Json(new { ok = false, error = ex.Message }, statusCode: 409);
+    }
+    catch (MetadataNotRegisteredException)
     {
         // 自愈防刷：冷却期内直接拒绝，不触发重载。
         if (DateTime.UtcNow - lastHealAt < healCooldown)
@@ -105,6 +111,11 @@ app.MapPost("/api/genesis", async (GatewayRequest request) =>
             // 重试仍失败——返回业务错误。
             return Results.BadRequest(new { ok = false, error = ex.Message });
         }
+    }
+    catch (InvalidOperationException ex)
+    {
+        // 其他业务错误（缺参/不存在/载荷非法等客户端问题）——400 直接返回，不 reload。
+        return Results.BadRequest(new { ok = false, error = ex.Message });
     }
 });
 

@@ -111,7 +111,7 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
             if (output.Length > 0)
             {
                 // 抛出冲突异常。
-                throw new InvalidOperationException(
+                throw new ConcurrencyConflictException(
                     $"行 {entity.Id} 已存在——BulkInsert 是纯插入语义，覆盖写入请使用 UpsertAsync。");
             }
 
@@ -380,29 +380,11 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
             if (existing.Version != entity.Version)
             {
                 // 抛出乐观锁冲突。
-                throw new InvalidOperationException(
+                throw new ConcurrencyConflictException(
                     $"乐观锁冲突：行 {entity.Id} 存储版本为 {existing.Version}，请求版本为 {entity.Version}——请重读后重试。");
             }
 
-            // 第 2 步：旧行落成历史行——Role=6、新 Id、ParentId 指向当前行。
-            var historyRow = existing with
-            {
-                // 历史行 Id 换新。
-                Id = Guid.NewGuid(),
-                // 角色改为历史。
-                Role = UniversalEntity.RoleHistory,
-                // 挂到被更新的当前行下。
-                ParentId = existing.Id
-            };
-
-            // 历史行打包写入（新 key 不冲突）。
-            var historyKey = historyRow.Id;
-            var historyValue = UniversalEntityCodec.Pack(historyRow);
-
-            // 写入历史行。
-            session.Upsert(ref historyKey, ref historyValue);
-
-            // 第 3 步：构造更新后的行——Version 递增、CreatedAt 保留。
+            // 第 2 步：构造更新后的行——Version 递增、CreatedAt 保留。
             var updatedRow = entity with
             {
                 // 乐观锁版本递增。
@@ -413,12 +395,34 @@ public sealed class FasterKvUniversalStore : IUniversalStore, IDisposable
                 UpdatedAt = DateTime.UtcNow
             };
 
-            // 覆盖主键。
+            // 第 3 步：先覆盖主键（第 25 轮顺序对齐：先主行后历史行，失败路径无幽灵历史）。
             var mainKey = entity.Id;
             var mainValue = UniversalEntityCodec.Pack(updatedRow);
 
             // 覆盖写入。
             session.Upsert(ref mainKey, ref mainValue);
+
+            // 第 4 步：主行成功后写历史行——Role=6、新 Id、ParentId 指向当前行。
+            var historyRow = existing with
+            {
+                // 历史行 Id 换新。
+                Id = Guid.NewGuid(),
+                // 角色改为历史。
+                Role = UniversalEntity.RoleHistory,
+                // 挂到被更新的当前行下。
+                ParentId = existing.Id,
+                // 版本归属（第 25 轮 P1）：记录被覆盖前实体的版本。
+                Version = existing.Version,
+                // 变更时刻（FASTER codec 不持久化时间戳——诚实边界，字段值仍对齐语义）。
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // 历史行打包写入（新 key 不冲突）。
+            var historyKey = historyRow.Id;
+            var historyValue = UniversalEntityCodec.Pack(historyRow);
+
+            // 写入历史行。
+            session.Upsert(ref historyKey, ref historyValue);
 
             // 返回落库后的最终行。
             results.Add(updatedRow);

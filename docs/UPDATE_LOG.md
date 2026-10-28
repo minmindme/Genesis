@@ -1,5 +1,63 @@
 # Genesis 更新日志
 
+## 2026-10-28 第 25 轮：四件收口——网关自愈收窄 + 幽灵历史对齐 + 统一信封 + 历史版本归属（功能冻结前）
+
+### 更新内容（采纳评审排序：网关自愈与幽灵历史是 P0 事故，历史版本化是 P1 质量）
+
+**P0-1：网关自愈收窄（事务契约里最危险的运行时 bug）**
+- 新增 [ActionExceptions.cs](../src/Emoking.DAL/ActionExceptions.cs) 失败语义分类（均继承 InvalidOperationException——既有断言兼容）：
+  - `MetadataNotRegisteredException`：部署/配置问题（类型/命令/边类型/步骤未注册）——**唯一触发网关 reload+重试**；
+  - `ConcurrencyConflictException`：乐观锁冲突（正常业务语义，两读者一胜一败）——网关映射 **409**，绝不 reload 重试；
+- 抛点改造：ActionBus（类型/边类型未注册）、Executor（命令/步骤未注册）→ MetadataNotRegistered；三引擎全部 CAS/插入冲突 → ConcurrencyConflict；
+- Gateway catch 三分支：Conflict→409 / NotRegistered→reload（5 秒冷却）→其余 InvalidOperationException→400——**CAS 冲突不再被误 reload（非幂等动作重复写事故封堵）**。
+
+**P0-2：InMemory/FASTER Upsert 失败语义对齐（换引擎不变正确性含失败路径）**
+- InMemory 顺序翻转：先 TryUpdate 主行（CAS）→ 成功后才写历史行——CAS 失败路径无幽灵历史（与 SQL 语义一致）；
+- FASTER 同理翻转；
+- 诚实声明：InMemory 幽灵窗口在"Version 匹配但 TryUpdate 并发失败"竞态——单线程红测试无法稳定触发（`Upsert_InMemory_CasFailure_LeavesNoGhostHistory` 实测通过为绿），修复属防御性顺序对齐，测试留作回归护栏。
+
+**P0-3：统一信封 {Id, TypeName, Version, Data}**
+- InsertData：裸 Guid → 信封（Version=1）；GetData：动态轨属性字典混排 → 信封（Data=属性字典）+ **快照/强类型轨首次带 Version**；UpdateData：{Id,Version} → 信封（Data=null）；
+- 客户端对**任何模式**可闭环：GetData 拿 Version → UpdateData 传 ExpectedVersion → 冲突 409。
+- 测试适配：`TestBusHelpers.ExtractId` 统一提取（12 处断言迁移）。
+
+**P1：历史版本归属 + ExpectedVersion 严格化**
+- 历史行 **Version = 被覆盖前实体的版本**（快照/图模式/三引擎一致——此前图模式属性行历史恒 1）；历史行 **UpdatedAt = 本次变更时刻**（此前为旧行上次变更时间——审计时间线语义修正）；
+- `ExpectedVersion` 非法值（如 "abc"）**显式报错**——消灭"以为在做乐观锁实际在裸奔"的静默回退。
+
+**测试基建补漏（评审小笔记）**
+- `TestDatabase.CreateAsync` 自动清理孤儿库：严格限定本工具命名签名（`GenesisTest_类名_6位hex`）——崩溃残留回收，非本工具签名永不触碰（评审"崩溃残留永远清不掉"修复）；
+- `EdgeBenchmark_SqlServer_100K` 补 BENCH 门禁（第 19 轮基准门禁漏网之鱼——100K 压测曾拖红回归）。
+
+### 测试（先红后绿实录）
+
+- 红 4 条：`Bus_UpdateData_InvalidExpectedVersion_Throws`（静默回退成功）、`Bus_InsertData_ReturnsEnvelope`（裸 Guid）、`Bus_GetHistory_VersionsFollowEntityVersions`（历史版本恒 1）、幽灵历史（注：并发竞态窗口单线程不可稳定触发，实现前即为绿——诚实声明）；
+- 绿：**80/80 通过**（+4；Skipped 6——基准门禁含新补的 EdgeBenchmark）。
+
+### 验收
+
+- `dotnet build`：0 警告 0 错误。
+- 全量回归：**80 通过 / 0 失败 / 6 跳过**。
+
+### 排障实录
+
+| BUG | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| B40 | 多个测试随机 SQL 超时（不同测试每轮漂移） | 测试库孤儿堆积（16 个：Z 类刻意不删 + 崩溃残留）+ 100K 基准未门禁 | CreateAsync 孤儿清理 + EdgeBenchmark 补门禁 |
+| B41 | 冲突断言精确类型失败（6 处） | ConcurrencyConflictException 是 InvalidOperationException 子类，xunit ThrowsAsync 精确匹配 | 测试断言按语义分类迁移（冲突→Concurrency / 未注册→MetadataNotRegistered / 其余保持） |
+
+### 诚实边界
+
+- 409 只在网关层映射；DAL 内异常类型即契约（ConcurrencyConflict/MetadataNotRegistered），CLI 消费方按类型自行处理。
+- 快照轨历史行 Version 语义已对齐（旧实体版本），但快照 GetData 的 Data 为强类型实例——Version 在信封层 ✓。
+- 白皮书 3.0（三处矛盾修正 + 20-25 轮补录 + 多实例/单表边界）留收官轮——本轮冻结功能。
+
+### 未改旁支
+
+白皮书 3.0 + v0.1 tag（下轮收官）、QueryData（v0.1 后首个迭代）、UpdateGraphAsync 单事务、SM4、雪花 ID、GitHub 推送（本地领先 9 提交，仍缺 remote 地址）。
+
+---
+
 ## 2026-10-28 第 24 轮：评审 4+6——写侧 JSON 全面化 + 图模式历史复制与 GetHistory（system as history 完整兑现）
 
 ### 更新内容（采纳评审建议：4 与 6 本轮，5 与白皮书 3.0 下轮收官）

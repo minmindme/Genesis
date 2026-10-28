@@ -158,11 +158,11 @@ public sealed class UniversalActionBus
         var forwardTypeId = _metaCache.GetTypeIdByName(edgeTypeName);
         var reverseTypeId = _metaCache.GetTypeIdByName(edgeTypeName + "By");
 
-        // 任一缺失即失败。
+        // 任一缺失即失败——部署/配置语义（网关按此类型自愈 reload，第 25 轮收窄）。
         if (forwardTypeId is null || reverseTypeId is null)
         {
-            // 抛出异常。
-            throw new InvalidOperationException(
+            // 抛出未注册异常。
+            throw new MetadataNotRegisteredException(
                 $"边类型 '{edgeTypeName}'/'{edgeTypeName}By' 未在池中注册——请先通过 ImportSystem 定义它。");
         }
 
@@ -281,10 +281,17 @@ public sealed class UniversalActionBus
         // （多客户端并发：两个读者各持 v1，先提交者胜，后提交者显式冲突——P0-2 修复）。
         var expectedVersion = entityRow.Version;
 
-        // 客户端显式携带 ExpectedVersion 时采用之——CAS 校验交给存储层（不匹配即冲突异常）。
-        if (args.TryGetValue("ExpectedVersion", out var expectedText)
-            && int.TryParse(expectedText, out var clientExpected))
+        // 客户端显式携带 ExpectedVersion 时采用之——非法值显式报错（第 25 轮 P0：
+        // 静默回退会让客户端以为在做乐观锁，实际在裸奔）。
+        if (args.TryGetValue("ExpectedVersion", out var expectedText))
         {
+            // 严格解析——失败即拒绝。
+            if (!int.TryParse(expectedText, out var clientExpected))
+            {
+                // 抛出参数异常。
+                throw new InvalidOperationException($"ExpectedVersion '{expectedText}' 不是合法整数。");
+            }
+
             // 采用客户端版本。
             expectedVersion = clientExpected;
         }
@@ -311,14 +318,12 @@ public sealed class UniversalActionBus
             // CAS 覆盖。
             var upsertedSnapshot = (await _store.UpsertAsync(new[] { snapshotRow })).Single();
 
-            // 返回更新结果（Id + 新版本——客户端下一次提交用）。
-            return new Dictionary<string, object>
-            {
-                // 实体行 Id。
-                ["Id"] = upsertedSnapshot.Id,
-                // 更新后的乐观锁版本。
-                ["Version"] = upsertedSnapshot.Version
-            };
+            // 统一信封（第 25 轮）：Id + 新版本——客户端下一次提交用。
+            return BuildEnvelope(
+                upsertedSnapshot.Id,
+                _metaCache.GetTypeByTypeId(entityRow.TypeId)?.TypeName ?? string.Empty,
+                upsertedSnapshot.Version,
+                null);
         }
 
         // ===== 图模式轨：三步子图替换（PUT）=====
@@ -346,8 +351,10 @@ public sealed class UniversalActionBus
             .ToList();
 
         // 第 2.5 步：旧属性行复制为 Role=6 历史行（第 24 轮评审 6——system as history 对图模式完整兑现）：
-        // Id 换新、Role 改历史、ParentId 挂到当前实体行、TypeId/Value/Version 原样保留——
+        // Id 换新、Role 改历史、ParentId 挂到当前实体行、TypeId/Value 原样保留——
         // 审计链经 GetHistory 动作读取，属性名经 TypeId 反查还原。
+        // 第 25 轮 P1 版本归属：历史行 Version = 被覆盖前实体的版本（expectedVersion），
+        // UpdatedAt = 本次变更时刻——历史行与实体版本链对齐。
         var propertyHistoryRows = oldPropertyRows
             .Select(row => row with
             {
@@ -356,7 +363,11 @@ public sealed class UniversalActionBus
                 // 角色改为历史。
                 Role = UniversalEntity.RoleHistory,
                 // 挂到被更新的当前实体行下。
-                ParentId = entityId
+                ParentId = entityId,
+                // 版本归属：被覆盖前实体的版本。
+                Version = expectedVersion,
+                // 变更时刻：本次更新发生时间。
+                UpdatedAt = DateTime.UtcNow
             })
             .ToList();
 
@@ -384,14 +395,12 @@ public sealed class UniversalActionBus
             await _store.BulkInsertAsync(newPropertyRows);
         }
 
-        // 返回更新结果（Id + 新版本——客户端下一次提交用）。
-        return new Dictionary<string, object>
-        {
-            // 实体行 Id。
-            ["Id"] = upsertedEntity.Id,
-            // 更新后的乐观锁版本。
-            ["Version"] = upsertedEntity.Version
-        };
+        // 返回统一信封（第 25 轮）：Id + 新版本——客户端下一次提交用。
+        return BuildEnvelope(
+            upsertedEntity.Id,
+            metaType?.TypeName ?? string.Empty,
+            upsertedEntity.Version,
+            null);
     }
 
     /// <summary>
@@ -486,11 +495,11 @@ public sealed class UniversalActionBus
         // 类型名翻译为 TypeId。
         var typeId = _metaCache.GetTypeIdByName(typeName);
 
-        // 类型未注册显式失败。
+        // 类型未注册显式失败——部署/配置语义（网关按此类型自愈 reload，第 25 轮收窄）。
         if (typeId is null)
         {
-            // 抛出异常。
-            throw new InvalidOperationException(
+            // 抛出未注册异常。
+            throw new MetadataNotRegisteredException(
                 $"类型 '{typeName}' 未在池中注册——请先通过 CreateEntity 等工作流创建它。");
         }
 
@@ -510,8 +519,32 @@ public sealed class UniversalActionBus
         // 落库。
         await _store.BulkInsertAsync(rows);
 
-        // 返回实体行 Id。
-        return rows[0].Id;
+        // 统一信封（第 25 轮）：{Id, TypeName, Version, Data}——客户端凭 Version 做乐观锁闭环。
+        return BuildEnvelope(rows[0].Id, typeName, rows[0].Version, null);
+    }
+
+    /// <summary>
+    /// 构造统一返回信封——三个数据动作（InsertData/GetData/UpdateData）的统一响应形态。
+    /// </summary>
+    /// <param name="id">实体行 Id。</param>
+    /// <param name="typeName">实体类型名。</param>
+    /// <param name="version">乐观锁版本。</param>
+    /// <param name="data">业务数据（GetData 为完整属性/实例；Insert/Update 为 null——详情走 GetData）。</param>
+    /// <returns>可 JSON 序列化的信封字典。</returns>
+    private static Dictionary<string, object?> BuildEnvelope(Guid id, string typeName, int version, object? data)
+    {
+        // 组装信封——四键齐。
+        return new Dictionary<string, object?>
+        {
+            // 实体行 Id。
+            ["Id"] = id,
+            // 实体类型名。
+            ["TypeName"] = typeName,
+            // 乐观锁版本。
+            ["Version"] = version,
+            // 业务数据。
+            ["Data"] = data
+        };
     }
 
     /// <summary>
@@ -549,40 +582,23 @@ public sealed class UniversalActionBus
         var subgraph = new List<UniversalEntity> { entityRow };
         subgraph.AddRange(await _store.GetByParentIdAsync(entityId));
 
+        // 实体类型名——信封自描述用。
+        var entityTypeName = _metaCache.GetTypeByTypeId(entityRow.TypeId)?.TypeName ?? string.Empty;
+
         // 网关组装（快照/强类型图/动态图自动分轨）。
         var assembled = _gateway.Assemble(subgraph, entityRow.TypeId);
 
-        // 万物容器的动态属性不被 System.Text.Json 枚举——转为属性字典视图再返回。
-        // 第 20 轮半修：字典视图补 Id 与 TypeName——通用 API 的返回值必须能自证身份，
-        // agent 拿到它才能发起后续操作（DeleteData/InsertEdge 都需要实体行 Id）。
-        // 第 23 轮 P0-2：补 Version——客户端凭它做 UpdateData 的 ExpectedVersion 乐观锁（两读者一胜一败）。
-        return assembled is UniversalObject universalObject
-            ? BuildSelfDescribingView(universalObject, entityRow.Version)
-            : assembled;
-    }
+        // 万物容器的动态属性不被 System.Text.Json 枚举——转统一信封（第 25 轮）：
+        // Data 装属性字典视图，Id/TypeName/Version 在信封层——三动作形态对齐，
+        // 客户端对任何模式都能拿 Version 做乐观锁闭环。
+        if (assembled is UniversalObject universalObject)
+        {
+            // 动态轨——属性字典为 Data。
+            return BuildEnvelope(entityId, universalObject.TypeName, entityRow.Version, universalObject.GetProperties());
+        }
 
-    /// <summary>
-    /// 构造自描述属性视图——动态属性字典 + 实体行 Id、类型名与乐观锁版本。
-    /// </summary>
-    /// <param name="universalObject">组装完成的万物容器。</param>
-    /// <param name="version">实体行当前乐观锁版本（UpdateData 的 ExpectedVersion 依据）。</param>
-    /// <returns>可 JSON 序列化的属性字典（含 Id/TypeName/Version 三个系统键）。</returns>
-    private static Dictionary<string, object?> BuildSelfDescribingView(UniversalObject universalObject, int version)
-    {
-        // 复制属性字典——不污染容器内部状态。
-        var view = new Dictionary<string, object?>(universalObject.GetProperties(), StringComparer.Ordinal);
-
-        // 身份键：实体行 Id。
-        view["Id"] = universalObject.Id;
-
-        // 身份键：实体类型名。
-        view["TypeName"] = universalObject.TypeName;
-
-        // 乐观锁版本——客户端提交更新时作为 ExpectedVersion 回传。
-        view["Version"] = version;
-
-        // 返回自描述视图。
-        return view;
+        // 快照/强类型轨——实例为 Data（强类型实例保留编译期形态）。
+        return BuildEnvelope(entityId, entityTypeName, entityRow.Version, assembled);
     }
 
     /// <summary>

@@ -228,7 +228,7 @@ public sealed class UpsertTests : IAsyncLifetime
         Assert.NotNull(visible);
         Assert.Equal("tenant-A-secret", visible!.Value);
 
-        // 第 3 步：租户 B 尝试 upsert 同 Id——对 B 该行不可见，必须拒绝。
+        // 第 3 步：租户 B 尝试 upsert 同 Id——对 B 该行不可见，必须拒绝（普通业务异常，非并发冲突）。
         var storeB = new PolicyDrivenStore(inner, cache, "tenant-B", keyRing);
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => storeB.UpsertAsync(new[] { BuildDocRow(docId, "hacked-by-B", 1) }));
@@ -240,6 +240,35 @@ public sealed class UpsertTests : IAsyncLifetime
         var intact = await storeA.GetByIdAsync(docId);
         Assert.NotNull(intact);
         Assert.Equal("tenant-A-secret", intact!.Value);
+    }
+
+    /// <summary>
+    /// 第 25 轮红测试（评审 P0）：InMemory CAS 失败（Version 过期）后不得留下幽灵历史行。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：InMemory Upsert 先 TryAdd 历史行再 TryUpdate 主行——CAS 失败时历史行残留，
+    /// 而本次更新从未发生（SQL 实现是先 CAS 后历史，失败路径语义不一致）。
+    /// </remarks>
+    [Fact]
+    public async Task Upsert_InMemory_CasFailure_LeavesNoGhostHistory()
+    {
+        // 构造进程内存储。
+        var store = new InMemoryUniversalStore();
+
+        // 插入基线行（Version=1）。
+        var docId = Guid.NewGuid();
+        await store.BulkInsertAsync(new[] { BuildDocRow(docId, "v1") });
+
+        // 合法更新一次——存储推到 Version=2，历史行留 "v1"。
+        await store.UpsertAsync(new[] { BuildDocRow(docId, "v2", 1) });
+
+        // 用过期 Version=1 再更新 "ghost"——显式冲突（CAS 拒绝）。
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(
+            () => store.UpsertAsync(new[] { BuildDocRow(docId, "ghost", 1) }));
+
+        // 幽灵历史行断言：CAS 失败的那次更新不得留下任何历史行（修复前 InMemory 留下 "ghost" 幽灵，必红）。
+        var history = await store.GetHistoryAsync(docId);
+        Assert.DoesNotContain(history, row => row.Value == "ghost");
     }
 
     /// <summary>
@@ -270,7 +299,7 @@ public sealed class UpsertTests : IAsyncLifetime
         await store.BulkInsertAsync(new[] { BuildDocRow(docId, "v1") });
 
         // 纯插入语义：同 Id 再插显式失败（不再静默覆盖）。
-        var duplicateException = await Assert.ThrowsAsync<InvalidOperationException>(
+        var duplicateException = await Assert.ThrowsAsync<ConcurrencyConflictException>(
             () => store.BulkInsertAsync(new[] { BuildDocRow(docId, "duplicate") }));
 
         // 异常点明纯插语义。
@@ -295,7 +324,7 @@ public sealed class UpsertTests : IAsyncLifetime
         Assert.Equal(2, reread.Version);
 
         // 第 3 步：Version 过期即冲突。
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(
             () => store.UpsertAsync(new[] { BuildDocRow(docId, "stale", 1) }));
 
         // 第 4 步：历史行入池且不污染指针追逐。
@@ -324,7 +353,7 @@ public sealed class UpsertTests : IAsyncLifetime
             await store.BulkInsertAsync(new[] { BuildDocRow(docId, "v1") });
 
             // 纯插入语义：同 Id 再插显式失败。
-            await Assert.ThrowsAsync<InvalidOperationException>(
+            await Assert.ThrowsAsync<ConcurrencyConflictException>(
                 () => store.BulkInsertAsync(new[] { BuildDocRow(docId, "duplicate") }));
 
             // 读回 v1。
@@ -345,7 +374,7 @@ public sealed class UpsertTests : IAsyncLifetime
             Assert.Equal(2, reread.Version);
 
             // 第 3 步：Version 过期即冲突。
-            await Assert.ThrowsAsync<InvalidOperationException>(
+            await Assert.ThrowsAsync<ConcurrencyConflictException>(
                 () => store.UpsertAsync(new[] { BuildDocRow(docId, "stale", 1) }));
         }
 

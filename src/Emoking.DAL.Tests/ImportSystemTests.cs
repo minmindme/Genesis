@@ -124,7 +124,7 @@ public sealed class ImportSystemTests : IAsyncLifetime
         Assert.Contains("StudiesIn", schemaJson);
 
         // 第 4 步：InsertData——学生与班级写入（类型注册成功即证明导入生效）。
-        var studentId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var studentId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 学生。
             ["TypeName"] = "Student",
@@ -133,7 +133,7 @@ public sealed class ImportSystemTests : IAsyncLifetime
         }));
 
         // ClassRoom 快照写入。
-        var classId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var classId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 班级。
             ["TypeName"] = "ClassRoom",

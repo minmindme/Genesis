@@ -1,5 +1,6 @@
 // ANCHOR: test.infra.test-database - 测试基建：每测试类独立数据库（CREATE/DROP），消灭共享库 + TRUNCATE
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Emoking.DAL;
@@ -64,18 +65,49 @@ public static class TestDatabase
         // 立即打开。
         connection.Open();
 
-        // 第 1 步：同名残留库先强删（上轮崩溃未清理的兜底）。
-        await using (var dropCommand = connection.CreateCommand())
+        // 第 0 步（第 25 轮评审小笔记修复）：清理孤儿测试库——
+        // 严格限定本工具命名签名（GenesisTest_类名_6位hex），崩溃残留（DROP 未执行）在此回收；
+        // 不匹配该签名（如手工创建的同前缀库）永不触碰。
+        await using (var cleanupCommand = connection.CreateCommand())
         {
-            // SET SINGLE_USER 强断连接后 DROP。
-            dropCommand.CommandText =
-                $"IF DB_ID(N'{_currentDatabaseName}') IS NOT NULL " +
-                $"EXEC('ALTER DATABASE [{_currentDatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; " +
-                $"DROP DATABASE [{_currentDatabaseName}]')";
+            // 枚举孤儿库。
+            cleanupCommand.CommandText = @"
+                SELECT name FROM sys.databases
+                WHERE name LIKE 'GenesisTest\_%' ESCAPE '\'
+                  AND name LIKE '%[_][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'";
 
-            // 执行清理。
-            await dropCommand.ExecuteNonQueryAsync();
+            // 逐个强删。
+            await using var reader = await cleanupCommand.ExecuteReaderAsync();
+
+            // 收集孤儿名（先读完再删——Reader 占用时不能执行其他命令）。
+            var orphanNames = new List<string>();
+
+            // 读取。
+            while (await reader.ReadAsync())
+            {
+                // 收集。
+                orphanNames.Add(reader.GetString(0));
+            }
+
+            // 关闭 Reader。
+            await reader.CloseAsync();
+
+            // 逐个删除。
+            foreach (var orphan in orphanNames)
+            {
+                // 构造删除命令。
+                await using var dropCommand = connection.CreateCommand();
+
+                // 强断连接后删除。
+                dropCommand.CommandText =
+                    $"EXEC('ALTER DATABASE [{orphan}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{orphan}]')";
+
+                // 执行。
+                await dropCommand.ExecuteNonQueryAsync();
+            }
         }
+
+        // 第 1 步：同名残留库先强删（与本次同名的兜底）。
 
         // 第 2 步：创建全新库。
         await using (var createCommand = connection.CreateCommand())

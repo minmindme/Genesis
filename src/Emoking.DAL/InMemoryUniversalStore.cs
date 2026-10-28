@@ -43,7 +43,7 @@ public sealed class InMemoryUniversalStore : IUniversalStore
             if (!_rows.TryAdd(entity.Id, entity))
             {
                 // 抛出冲突异常。
-                throw new InvalidOperationException(
+                throw new ConcurrencyConflictException(
                     $"行 {entity.Id} 已存在——BulkInsert 是纯插入语义，覆盖写入请使用 UpsertAsync。");
             }
         }
@@ -214,7 +214,7 @@ public sealed class InMemoryUniversalStore : IUniversalStore
                 if (!_rows.TryAdd(entity.Id, entity))
                 {
                     // 抛出并发冲突。
-                    throw new InvalidOperationException(
+                    throw new ConcurrencyConflictException(
                         $"并发冲突：行 {entity.Id} 在写入间隙被其他事务插入——请重读后重试。");
                 }
 
@@ -229,25 +229,11 @@ public sealed class InMemoryUniversalStore : IUniversalStore
             if (existing.Version != entity.Version)
             {
                 // 抛出乐观锁冲突。
-                throw new InvalidOperationException(
+                throw new ConcurrencyConflictException(
                     $"乐观锁冲突：行 {entity.Id} 存储版本为 {existing.Version}，请求版本为 {entity.Version}——请重读后重试。");
             }
 
-            // 第 2 步：构造历史行——Role=6、新 Id、ParentId 指向当前行、其余字段原样保留。
-            var historyRow = existing with
-            {
-                // 历史行 Id 换新。
-                Id = Guid.NewGuid(),
-                // 角色改为历史。
-                Role = UniversalEntity.RoleHistory,
-                // 挂到被更新的当前行下。
-                ParentId = existing.Id
-            };
-
-            // 历史行先入池。
-            _rows.TryAdd(historyRow.Id, historyRow);
-
-            // 第 3 步：构造更新后的行——Version 递增、CreatedAt 保留原始创建时间。
+            // 第 2 步：构造更新后的行——Version 递增、CreatedAt 保留原始创建时间。
             var updatedRow = entity with
             {
                 // 乐观锁版本递增。
@@ -258,13 +244,32 @@ public sealed class InMemoryUniversalStore : IUniversalStore
                 UpdatedAt = DateTime.UtcNow
             };
 
-            // 第 4 步：CAS 覆盖——TryUpdate 以旧行为比较基准，失败即被并发抢先。
+            // 第 3 步：CAS 覆盖——TryUpdate 以旧行为比较基准，失败即被并发抢先。
+            // 第 25 轮顺序对齐：先主行后历史行——CAS 失败路径不残留幽灵历史（与 SQL 语义一致）。
             if (!_rows.TryUpdate(entity.Id, updatedRow, existing))
             {
                 // 抛出并发冲突。
-                throw new InvalidOperationException(
+                throw new ConcurrencyConflictException(
                     $"并发冲突：行 {entity.Id} 在写入间隙被其他事务更新——请重读后重试。");
             }
+
+            // 第 4 步：主行成功后写历史行——Role=6、新 Id、ParentId 指向当前行、其余字段原样保留。
+            var historyRow = existing with
+            {
+                // 历史行 Id 换新。
+                Id = Guid.NewGuid(),
+                // 角色改为历史。
+                Role = UniversalEntity.RoleHistory,
+                // 挂到被更新的当前行下。
+                ParentId = existing.Id,
+                // 版本归属（第 25 轮 P1）：记录被覆盖前实体的版本。
+                Version = existing.Version,
+                // 变更时刻（第 25 轮 P1）：历史行的 UpdatedAt 记录本次变更发生时间。
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // 历史行入池。
+            _rows.TryAdd(historyRow.Id, historyRow);
 
             // 返回落库后的最终行。
             results.Add(updatedRow);

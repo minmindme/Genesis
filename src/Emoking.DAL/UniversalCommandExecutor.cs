@@ -113,11 +113,11 @@ public sealed class UniversalCommandExecutor
         // 从池中查命令定义——命令树即数据。
         var command = _metaCache.GetCommand(commandName);
 
-        // 未注册的命令显式失败。
+        // 未注册的命令显式失败——部署/配置语义（网关按此类型自愈 reload，第 25 轮收窄）。
         if (command is null)
         {
             // 抛出未注册异常。
-            throw new InvalidOperationException(
+            throw new MetadataNotRegisteredException(
                 $"命令 '{commandName}' 未在池中注册（Role=7）。已注册：{string.Join("/", _metaCache.GetCommandNames())}。");
         }
 
@@ -160,8 +160,8 @@ public sealed class UniversalCommandExecutor
             // 查步骤注册表。
             if (!_steps.TryGetValue(stepName, out var step))
             {
-                // 未注册的步骤显式失败。
-                throw new InvalidOperationException(
+                // 未注册的步骤显式失败——部署/配置语义（网关按此类型自愈 reload，第 25 轮收窄）。
+                throw new MetadataNotRegisteredException(
                     $"命令 '{commandName}' 的步骤 '{stepName}' 未注册。已注册：{string.Join("/", _steps.Keys)}。");
             }
 

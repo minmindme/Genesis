@@ -330,7 +330,7 @@ public sealed class UniversalEntityRepository
                 if (existing.Version != entity.Version)
                 {
                     // 抛出乐观锁冲突。
-                    throw new InvalidOperationException(
+                    throw new ConcurrencyConflictException(
                         $"乐观锁冲突：行 {entity.Id} 存储版本为 {existing.Version}，请求版本为 {entity.Version}——请重读后重试。");
                 }
 
@@ -341,11 +341,11 @@ public sealed class UniversalEntityRepository
                 if (affected == 0)
                 {
                     // 抛出并发冲突。
-                    throw new InvalidOperationException(
+                    throw new ConcurrencyConflictException(
                         $"并发冲突：行 {entity.Id} 在写入间隙被其他事务更新——请重读后重试。");
                 }
 
-                // 第 3 步：旧行落成历史行——Role=6、新 Id、ParentId 指向当前行、时间戳与版本原样保留。
+                // 第 3 步：旧行落成历史行——Role=6、新 Id、ParentId 指向当前行、CreatedAt 与 Version 原样保留。
                 var historyRow = existing with
                 {
                     // 历史行 Id 换新——主键不冲突。
@@ -353,7 +353,9 @@ public sealed class UniversalEntityRepository
                     // 角色改为历史。
                     Role = UniversalEntity.RoleHistory,
                     // 挂到被更新的当前行下（审计链入口）。
-                    ParentId = existing.Id
+                    ParentId = existing.Id,
+                    // 变更时刻（第 25 轮 P1）：历史行 UpdatedAt 记录本次变更发生时间（而非旧行上次变更时间）。
+                    UpdatedAt = DateTime.UtcNow
                 };
 
                 // 历史行全列显式插入（保留原始 CreatedAt/UpdatedAt）。

@@ -154,7 +154,7 @@ public sealed class ActionBusTests : IAsyncLifetime
         var bus = await BuildBusAsync(withCommand: false);
 
         // 第 3 步：InsertData——业务数据 JSON 直接进总线，总线以 Guid 形态返回实体行 Id。
-        var entityId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var entityId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "BusProduct",
@@ -218,14 +218,14 @@ public sealed class ActionBusTests : IAsyncLifetime
         var bus = await BuildBusAsync(withCommand: false);
 
         // 第 3 步：同类型插入两个实体——Alice 先、Bob 后。
-        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var aliceId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
             // Alice 载荷。
             ["Data"] = "{\"Name\":\"Alice\"}"
         }));
-        var bobId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var bobId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 同类型。
             ["TypeName"] = "Student",
@@ -304,7 +304,7 @@ public sealed class ActionBusTests : IAsyncLifetime
             new UniversalCommandExecutor(repository, cache, "."));
 
         // 第 3 步：插入 Alice（Age 18）。
-        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var aliceId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
@@ -393,7 +393,7 @@ public sealed class ActionBusTests : IAsyncLifetime
             new UniversalCommandExecutor(repository, cache, "."));
 
         // 第 3 步：插入商品。
-        var entityId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var entityId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "BusProduct",
@@ -501,14 +501,14 @@ public sealed class ActionBusTests : IAsyncLifetime
             new UniversalCommandExecutor(repository, cache, "."));
 
         // 第 3 步：建 Alice + Bob + Alice→Bob 正向边。
-        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var aliceId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
             // Alice 载荷。
             ["Data"] = "{\"Name\":\"Alice\"}"
         }));
-        var bobId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var bobId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
@@ -590,7 +590,7 @@ public sealed class ActionBusTests : IAsyncLifetime
             new UniversalCommandExecutor(repository, cache, "."));
 
         // 第 3 步：插入 Alice——两个客户端各自读到的都是 v1。
-        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var aliceId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
@@ -610,7 +610,7 @@ public sealed class ActionBusTests : IAsyncLifetime
         });
 
         // 第 5 步：客户端 B 仍持过期 v1 更新——必须冲突（修复前忽略 ExpectedVersion → 成功覆盖，必红）。
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(
             () => bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
             {
                 // 实体行 Id。
@@ -675,7 +675,7 @@ public sealed class ActionBusTests : IAsyncLifetime
             new UniversalCommandExecutor(repository, cache, "."));
 
         // 第 3 步：插入 Alice → 更新为 Alice-2。
-        var aliceId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var aliceId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // 类型名。
             ["TypeName"] = "Student",
@@ -713,6 +713,204 @@ public sealed class ActionBusTests : IAsyncLifetime
         // 审计链含属性名翻译与旧值。
         Assert.Contains("Name", historyJson);
         Assert.Contains("Alice", historyJson);
+    }
+
+    /// <summary>
+    /// 第 25 轮红测试（评审 P0）：ExpectedVersion 非法值必须显式报错，不得静默回退到当前版本。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：int.TryParse 失败即回退"引擎当前版本"——客户端以为在做乐观锁，实际在裸奔。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_UpdateData_InvalidExpectedVersion_Throws()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：真库总线 + 插入 Alice。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+        var aliceId = Assert.IsType<Guid>(((Dictionary<string, object?>?)await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 初始载荷。
+            ["Data"] = "{\"Name\":\"Alice\"}"
+        }))!["Id"]);
+
+        // 第 3 步：非法 ExpectedVersion——显式报错（修复前静默回退到当前版本成功提交，必红）。
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+            {
+                // 实体行 Id。
+                ["EntityId"] = aliceId.ToString(),
+                // 载荷。
+                ["Data"] = "{\"Name\":\"Hacked\"}",
+                // 非法版本。
+                ["ExpectedVersion"] = "abc"
+            }));
+
+        // 数据未被篡改。
+        var intact = await repository.GetByIdAsync(aliceId);
+        Assert.Equal(1, intact!.Version);
+    }
+
+    /// <summary>
+    /// 第 25 轮红测试（评审 P0）：统一信封——InsertData 返回 {Id, TypeName, Version, Data}。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：InsertData 只回裸 Guid——客户端拿不到 TypeName/Version，无法做乐观锁闭环。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_InsertData_ReturnsEnvelope()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：总线。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+
+        // 第 3 步：InsertData——信封断言（修复前返回裸 Guid，IsType 失败必红）。
+        var envelope = Assert.IsType<Dictionary<string, object?>>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 载荷。
+            ["Data"] = "{\"Name\":\"Alice\"}"
+        }));
+
+        // 四键齐。
+        Assert.Equal("Student", envelope["TypeName"]);
+        Assert.Equal(1, envelope["Version"]);
+        Assert.NotEqual(Guid.Empty, (Guid)envelope["Id"]!);
+    }
+
+    /// <summary>
+    /// 第 25 轮红测试（评审 P1）：历史版本归属——历史行 Version 记录被覆盖前实体的版本。
+    /// </summary>
+    /// <remarks>
+    /// 现状缺陷：图模式属性行历史 Version 恒为属性行自身版本（1）——与实体版本链脱节。
+    /// 修复后第 N 次更新产生的历史行 Version = 被覆盖前实体版本（N-1...）。
+    /// </remarks>
+    [Fact]
+    public async Task Bus_GetHistory_VersionsFollowEntityVersions()
+    {
+        // 第 1 步：清池 + 言出 Student 图模式类型。
+        await TruncateTableAsync();
+        var repository = new UniversalEntityRepository(new EmokingDbContext());
+        var studentTypeId = new Guid("55555555-5555-5555-5555-555555555555");
+        await repository.InsertBatchAsync(new[]
+        {
+            new UniversalEntity(
+                Id: studentTypeId,
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: null,
+                Value: "Student"),
+            new UniversalEntity(
+                Id: new Guid("55555555-5555-5555-5555-555555555501"),
+                TypeId: MetaCache.MetaTypeTypeId,
+                Role: UniversalEntity.RoleMeta,
+                ParentId: studentTypeId,
+                Value: "Name:String")
+        });
+
+        // 第 2 步：真库总线 + 插入 + 两次更新（实体版本 1→2→3）。
+        var cache = new MetaCache(repository);
+        await cache.LoadAsync();
+        var bus = new UniversalActionBus(
+            cache,
+            new UniversalEntityGateway(cache),
+            new SqlServerUniversalStore(repository),
+            new UniversalCommandExecutor(repository, cache, "."));
+        var envelope1 = Assert.IsType<Dictionary<string, object?>>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        {
+            // 类型名。
+            ["TypeName"] = "Student",
+            // 初始载荷。
+            ["Data"] = "{\"Name\":\"gen-1\"}"
+        }));
+        var aliceId = (Guid)envelope1["Id"]!;
+
+        // 第一次更新（期望版本 1 → 实体到 2，历史行应归属版本 1）。
+        var envelope2 = Assert.IsType<Dictionary<string, object?>>(await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // 第二代载荷。
+            ["Data"] = "{\"Name\":\"gen-2\"}",
+            // 乐观锁。
+            ["ExpectedVersion"] = "1"
+        }));
+
+        // 第二次更新（期望版本 2 → 实体到 3，历史行应归属版本 2）。
+        await bus.ExecuteActionAsync("UpdateData", new Dictionary<string, string>
+        {
+            // 实体行 Id。
+            ["EntityId"] = aliceId.ToString(),
+            // 第三代载荷。
+            ["Data"] = "{\"Name\":\"gen-3\"}",
+            // 乐观锁。
+            ["ExpectedVersion"] = envelope2["Version"]!.ToString()
+        });
+
+        // 第 4 步：审计链——历史行版本与实体版本链一致（修复前恒为 1，必红）。
+        var historyJson = System.Text.Json.JsonSerializer.Serialize(
+            await bus.ExecuteActionAsync("GetHistory", new Dictionary<string, string> { ["EntityId"] = aliceId.ToString() }),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                // 中文原样输出。
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+
+        // 两个历史版本都在（1 与 2）。
+        Assert.Contains("\"Version\":1", historyJson);
+        Assert.Contains("\"Version\":2", historyJson);
     }
 
     /// <summary>

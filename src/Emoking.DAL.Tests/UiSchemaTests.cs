@@ -147,7 +147,7 @@ public sealed class UiSchemaTests : IAsyncLifetime
         var bus = await BuildBusAsync();
 
         // 第 2 步：模拟渲染器提交——按 UI.Fields 收集字段值组装 InsertData。
-        var entityId = Assert.IsType<Guid>(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
+        var entityId = TestBusHelpers.ExtractId(await bus.ExecuteActionAsync("InsertData", new Dictionary<string, string>
         {
             // UI.Entity。
             ["TypeName"] = "Product",
