@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Genesis — 同构数据引擎 / One Table to Rule Them All</title>
+  <meta name="description" content="Genesis 是一个基于单表同构与元数据驱动的自举式数据内核。26 轮迭代、81 个测试、5 个物理引擎、0 业务 DDL。看一张表如何长出万物。">
+  <meta name="theme-color" content="#07080c">
+  <meta property="og:title" content="Genesis — 同构数据引擎">
+  <meta property="og:description" content="一生二，二生三，三生万物。一个单表同构、元数据自举的数据内核。">
+  <meta property="og:type" content="website">
+  <script>
+    document.documentElement.classList.add('js');
+    setTimeout(function () {
+      if (!window.__genesisReady) document.documentElement.classList.remove('js');
+    }, 3000);
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080c'/%3E%3Crect x='14' y='18' width='36' height='6' rx='3' fill='%23b8f24a'/%3E%3Crect x='14' y='29' width='36' height='6' rx='3' fill='%236ee7d8'/%3E%3Crect x='14' y='40' width='24' height='6' rx='3' fill='%23a78bfa'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到内容</a>
+  <div class="noise" aria-hidden="true"></div>
+  <div class="page-glow" aria-hidden="true"></div>
+
+  <header class="nav" id="nav">
+    <a class="brand" href="#top" aria-label="Genesis 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-text">GENESIS<small>同构数据引擎</small></span>
+    </a>
+    <nav class="nav-links" aria-label="页面章节">
+      <a href="#demo">现场</a>
+      <a href="#anatomy">解剖</a>
+      <a href="#proof">实测</a>
+      <a href="#timeline">时间线</a>
+    </nav>
+    <a class="nav-cta" href="../docs/GenesisWhitepaper.md">白皮书 <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="main">
+    <!-- ================= HERO ================= -->
+    <section class="hero" id="top">
+      <canvas id="hero-canvas" aria-hidden="true"></canvas>
+      <div class="hero-inner">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="pulse" aria-hidden="true"></span> ISOMORPHIC DATA KERNEL <span class="sep">/</span> v0.1</p>
+          <h1 class="hero-title">
+            <span class="line"><span>一生二，</span></span>
+            <span class="line"><span>二生三，</span></span>
+            <span class="line"><span class="grad">三生万物。</span></span>
+          </h1>
+          <p class="hero-en">One Table to Rule Them All.</p>
+          <p class="hero-sub">一个基于单表同构与元数据驱动的自举式数据内核。<br>没有业务 DDL，没有 ORM，只有数据生成数据。</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#demo">看它如何工作 <span aria-hidden="true">↘</span></a>
+            <a class="btn btn-ghost" href="../docs/GenesisWhitepaper.md">阅读架构白皮书 <span aria-hidden="true">↗</span></a>
+          </div>
+          <dl class="hero-stats">
+            <div><dt>26</dt><dd>轮迭代</dd></div>
+            <div><dt>81</dt><dd>个测试</dd></div>
+            <div><dt>5</dt><dd>个引擎</dd></div>
+            <div><dt>0</dt><dd>业务 DDL</dd></div>
+          </dl>
+        </div>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="orbit-stage">
+            <svg class="orbit-svg" viewBox="0 0 560 560" fill="none">
+              <defs>
+                <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#b8f24a" stop-opacity=".55"/>
+                  <stop offset="55%" stop-color="#6ee7d8" stop-opacity=".18"/>
+                  <stop offset="100%" stop-color="#a78bfa" stop-opacity=".05"/>
+                </linearGradient>
+              </defs>
+              <g class="orbit-lines" stroke="url(#lineGrad)" stroke-width="1">
+                <path d="M280 280 L280 58" />
+                <path d="M280 280 L472 138" />
+                <path d="M280 280 L512 300" />
+                <path d="M280 280 L440 470" />
+                <path d="M280 280 L280 512" />
+                <path d="M280 280 L120 470" />
+                <path d="M280 280 L48 300" />
+                <path d="M280 280 L88 138" />
+              </g>
+              <g class="orbit-ring" stroke="#ffffff" stroke-opacity=".07">
+                <ellipse cx="280" cy="280" rx="210" ry="210"/>
+                <ellipse cx="280" cy="280" rx="150" ry="150"/>
+              </g>
+            </svg>
+
+            <span class="orbit-chip c-meta"><i></i>Meta <b>1</b></span>
+            <span class="orbit-chip c-data"><i></i>Data <b>2</b></span>
+            <span class="orbit-chip c-edge"><i></i>Edge <b>3</b></span>
+            <span class="orbit-chip c-engine"><i></i>Engine <b>4</b></span>
+            <span class="orbit-chip c-security"><i></i>Policy <b>5</b></span>
+            <span class="orbit-chip c-history"><i></i>History <b>6</b></span>
+            <span class="orbit-chip c-command"><i></i>Command <b>7</b></span>
+            <span class="orbit-chip c-ui"><i></i>UI <b>8</b></span>
+
+            <div class="core-row">
+              <div class="core-head">
+                <span class="core-dot"></span>
+                <span>dbo.UniversalEntity</span>
+                <span class="core-count">9 cols</span>
+              </div>
+              <div class="core-cols">
+                <span>Id</span><span>TypeId</span><span>Role</span><span>ParentId</span><span class="wide">Value</span><span>Ver</span>
+              </div>
+              <div class="core-values">
+                <span class="mono">8f3a</span><span class="mono">a1c2</span><span class="role-pill">2</span><span class="dim">null</span><span class="wide mono ellipsis">{"Name":"张三"}</span><span class="mono">3</span>
+              </div>
+              <div class="core-stream" id="hero-stream"></div>
+            </div>
+          </div>
+          <div class="stage-caption"><span class="mono">9 COLUMNS</span><span class="arrow" aria-hidden="true">→</span><span class="mono">∞ PROJECTIONS</span></div>
+        </div>
+      </div>
+      <div class="hero-scroll"><span>SCROLL TO DECODE</span><i aria-hidden="true">↓</i></div>
+    </section>
+
+    <!-- ================= THESIS ================= -->
+    <section class="manifesto section" id="thesis">
+      <div class="section-head reveal">
+        <p class="section-kicker"><span>01</span> THE THESIS / 一个原语</p>
+        <h2>万物先归于<span class="accent">「一」</span>，<br>再由规则分化出<span class="accent">「万物」</span>。</h2>
+        <p class="section-lede">传统架构里，每新增一个业务就长出一张表。Genesis 反过来：让万物先归于一张同构表，再由元数据与角色规则分化出任何业务形态。</p>
+      </div>
+      <div class="manifesto-grid">
+        <article class="manifesto-card reveal">
+          <div class="m-diagram m-one" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <p class="m-index">01 / ONE</p>
+          <h3>一行原语</h3>
+          <p>9 列，没有业务语义列。业务数据、元数据、边、历史、引擎指令、安全策略、命令、界面——全部是同一行。</p>
+        </article>
+        <article class="manifesto-card reveal">
+          <div class="m-diagram m-two" aria-hidden="true">
+            <span class="axis axis-y">Role</span>
+            <span class="axis axis-x">ParentId</span>
+            <i class="dot d1"></i><i class="dot d2"></i><i class="dot d3"></i>
+          </div>
+          <p class="m-index">02 / TWO</p>
+          <h3>两条轴</h3>
+          <p>Role 定义「我是谁」，ParentId 定义「我在哪」。两条轴撑起图、树、文档、指令、历史——不需要第二张表。</p>
+        </article>
+        <article class="manifesto-card reveal">
+          <div class="m-diagram m-many" aria-hidden="true">
+            <span class="node n1"></span><span class="node n2"></span><span class="node n3"></span><span class="node n4"></span><span class="node n5"></span><span class="node n6"></span>
+            <span class="link l1"></span><span class="link l2"></span><span class="link l3"></span><span class="link l4"></span>
+          </div>
+          <p class="m-index">03 / MANY</p>
+          <h3>数据生成数据</h3>
+          <p>表结构、路由、命令、UI、安全策略、历史都是行。插几行，系统自己长出来；改一行，行为随之改变。</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= LIVE DEMO ================= -->
+    <section class="demo-section section" id="demo">
+      <div class="section-head reveal">
+        <p class="section-kicker"><span>02</span> THE MAGIC TRICK / 现场演示</p>
+        <h2>不是低代码。<br>是<span class="accent">数据在生成数据</span>。</h2>
+        <p class="section-lede">选一个场景，按「生成系统」。左边是意图，中间是行，右边是长出来的界面。全程没有 <code>CREATE TABLE</code>，也没有写一行前端组件。</p>
+      </div>
+
+      <div class="demo-shell reveal">
+        <aside class="demo-controls">
+          <div class="control-head"><span class="step-index">01</span><span>描述你的系统</span></div>
+          <label class="sr-only" for="prompt-input">用一句话描述你要的系统</label>
+          <textarea id="prompt-input" rows="3" spellcheck="false">建个图书管理系统，书有书名、作者和出版年份。</textarea>
+          <p class="input-hint">演示用规则匹配：图书 / 工单 / 学生 / 设备</p>
+          <div class="chips" id="prompt-chips" role="group" aria-label="场景预设"></div>
+          <button class="btn btn-primary btn-wide" id="generate-btn" type="button">
+            生成系统 <span class="key" aria-hidden="true">⌘ ↵</span>
+          </button>
+          <div class="run-log" id="run-log" aria-live="polite">
+            <div class="log-line"><span>00</span> 等待执行</div>
+          </div>
+          <p class="micro">MVP：前端模拟 Role=8 schema；真实运行时由 <code>GetSystemSchema</code> 从池中拉取。</p>
+        </aside>
+
+        <div class="demo-stage">
+          <div class="stage-head">
+            <div class="tabs" role="tablist" aria-label="底层视图">
+              <button class="tab is-active" type="button" data-tab="schema" role="tab" aria-selected="true">SystemJson</button>
+              <button class="tab" type="button" data-tab="rows" role="tab" aria-selected="false">UniversalEntity 行</button>
+            </div>
+            <span class="stage-status" id="stage-status">READY</span>
+          </div>
+          <div class="code-wrap">
+            <pre class="code" id="code-panel" tabindex="0"><code></code></pre>
+            <button class="copy-btn" id="copy-btn" type="button" aria-label="复制当前内容">复制</button>
+          </div>
+          <div class="pool">
+            <div class="pool-head"><span>POOL / 写入行</span><span id="pool-count">0</span></div>
+            <div class="pool-rows" id="pool-rows"></div>
+          </div>
+        </div>
+
+        <div class="demo-app" id="demo-app">
+          <div class="app-chrome">
+            <span class="app-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="app-url" id="app-url">genesis://idle</span>
+            <span class="app-live"><i></i> LIVE</span>
+          </div>
+          <div class="app-body" id="app-body">
+            <div class="app-empty" id="app-empty">
+              <span class="app-empty-mark" aria-hidden="true">⌁</span>
+              <p>等待一行元数据</p>
+              <small>点击「生成系统」，这里会长出一个界面。</small>
+            </div>
+          </div>
+          <div class="app-foot"><span id="app-count">0 rows</span><span class="mono">Role=8 → UI</span></div>
+        </div>
+      </div>
+
+      <p class="demo-caption reveal"><span class="caption-mark" aria-hidden="true">↳</span> 刚才发生了什么？没有 DDL，没有 ORM，没有前端组件。只有几行 <code>Role=1</code> 元数据、一行 <code>Role=4</code> 存储指令、一行 <code>Role=8</code> UI 描述。引擎读它们，界面就长出来了。</p>
+    </section>
+
+    <!-- ================= ANATOMY ================= -->
+    <section class="anatomy section" id="anatomy">
+      <div class="section-head reveal">
+        <p class="section-kicker"><span>03</span> ANATOMY / 剥开这行数据</p>
+        <h2>同一行，<span class="accent">八种身份</span>。</h2>
+        <p class="section-lede">不要把「单表」理解成把东西塞进一张表。它是一种编码：Role 决定这一行的语义，ParentId 决定它在图里的位置，Value 决定它携带什么。</p>
+      </div>
+
+      <div class="anatomy-grid">
+        <article class="card card-role reveal">
+          <div class="card-head"><span class="card-index">01</span><h3>一行解剖</h3><span class="card-tag">ROLE</span></div>
+          <p class="card-lede">点一个角色，看这一行在说什么。</p>
+          <div class="role-rail" id="role-rail" role="tablist" aria-label="角色类型"></div>
+          <div class="role-detail" id="role-detail"></div>
+        </article>
+
+        <article class="card card-mode reveal">
+          <div class="card-head"><span class="card-index">02</span><h3>两种形态</h3><span class="card-tag">STORAGE</span></div>
+          <div class="segmented" id="mode-toggle" role="group" aria-label="存储形态">
+            <button type="button" class="is-active" data-mode="graph">Graph</button>
+            <button type="button" data-mode="snapshot">Snapshot</button>
+          </div>
+          <div class="mode-visual" id="mode-visual"></div>
+          <p class="card-note" id="mode-note"></p>
+        </article>
+
+        <article class="card card-engine reveal">
+          <div class="card-head"><span class="card-index">03</span><h3>五引擎光谱</h3><span class="card-tag">PHYSICS</span></div>
+          <div class="engine-slider">
+            <input id="engine-range" type="range" min="0" max="4" step="1" value="0" aria-label="切换物理引擎">
+            <div class="engine-ticks"><span>Row</span><span>Bulk</span><span>TVP</span><span>Dict</span><span>FASTER</span></div>
+          </div>
+          <div class="engine-readout" id="engine-readout"></div>
+          <div class="engine-bars" id="engine-bars"></div>
+          <p class="card-note">同一份行结构，五种物理落点。不是替代链，是光谱——每种引擎都在某个维度上付出代价。条形为对数刻度，数字为实测毫秒。</p>
+        </article>
+
+        <article class="card card-crypto reveal">
+          <div class="card-head"><span class="card-index">04</span><h3>策略即数据</h3><span class="card-tag">SECURITY</span></div>
+          <div class="segmented" id="crypto-toggle" role="group" aria-label="加密策略">
+            <button type="button" class="is-active" data-crypto="aes">AES-GCM</button>
+            <button type="button" data-crypto="plain">Plain</button>
+          </div>
+          <div class="crypto-visual" id="crypto-visual"></div>
+          <p class="card-note" id="crypto-note"></p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= PROOF ================= -->
+    <section class="proof section" id="proof">
+      <div class="section-head reveal">
+        <p class="section-kicker"><span>04</span> THE PROOF / 可证伪的数字</p>
+        <h2>不讲「理论上更快」。<br>只贴<span class="accent">表格</span>。</h2>
+        <p class="section-lede">技术人最讨厌吹牛。下面每个数字都来自本机 SQL Server 2019 + Windows 10 + .NET 10 的实测，不是 TPC-C，不是云上，也不是「理论上」。</p>
+      </div>
+
+      <div class="proof-top reveal">
+        <div class="big-stat">
+          <div class="big-number-wrap"><span class="big-number" data-count="148">148</span><span class="big-x">×</span></div>
+          <p>累计提速 · 10K 实体 / 50K 行</p>
+          <small>15.4s → 0.137s · 每实体 13.7µs</small>
+        </div>
+        <div class="proof-mini">
+          <div><b>30×</b><span>磁盘 B+ 树遍历反超内存全扫</span></div>
+          <div><b>81</b><span>个测试 · 6 个基准门禁</span></div>
+          <div><b>B1–B43</b><span>踩坑实录 · 全部留在日志里</span></div>
+        </div>
+      </div>
+
+      <div class="chart-grid">
+        <article class="chart-card reveal">
+          <div class="chart-head"><span>01</span><h3>写入吞吐</h3><span class="chart-unit">entities / s</span></div>
+          <div class="bars" id="throughput-bars"></div>
+          <p class="chart-note">同一规模（10K 实体 / 50K 行）。从逐行 SQL 到进程内字典，累计 <b>148×</b>（线性刻度）。</p>
+        </article>
+        <article class="chart-card chart-reversal reveal">
+          <div class="chart-head"><span>02</span><h3>B+ 树的反杀</h3><span class="chart-unit">100K 双向边 · 30 万行</span></div>
+          <div class="bars" id="reversal-bars"></div>
+          <p class="chart-callout">磁盘表 <b>2ms</b> vs 内存全扫 <b>58ms</b> —— <b>30×</b></p>
+          <p class="chart-note">线性刻度。同构没有消灭索引的必要性，只是把索引的实现责任交还给了物理引擎。</p>
+        </article>
+      </div>
+
+      <div class="bench-wrap reveal">
+        <div class="bench-head"><span>五引擎光谱</span><span class="mono">同规模 · 同轮次 · 同机器</span></div>
+        <div class="bench-scroll">
+          <table class="bench-table">
+            <thead>
+              <tr><th>引擎</th><th>写入</th><th>读取</th><th>总计</th><th>吞吐</th><th>IPC 往返</th><th>ACID</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>① 逐行 + 磁盘表</td><td class="num">15,419 ms</td><td class="num">4,810 ms</td><td class="num">20,311 ms</td><td class="num">492 /s</td><td class="num">60,001</td><td><span class="yes">完整</span></td></tr>
+              <tr><td>② BulkCopy + 磁盘表</td><td class="num">1,858 ms</td><td class="num">655 ms</td><td class="num">2,528 ms</td><td class="num">3,955 /s</td><td class="num">2</td><td><span class="yes">完整</span></td></tr>
+              <tr><td>③ TVP + 内存优化表</td><td class="num">809 ms</td><td class="num">611 ms</td><td class="num">1,458 ms</td><td class="num">6,858 /s</td><td class="num">2</td><td><span class="yes">完整</span></td></tr>
+              <tr class="is-best"><td>④ 进程内 ConcurrentDictionary</td><td class="num">36 ms</td><td class="num">23 ms</td><td class="num">137 ms</td><td class="num">72,992 /s</td><td class="num">0</td><td><span class="no">重启即丢</span></td></tr>
+              <tr><td>⑤ 进程内 FASTER KV</td><td class="num">81 ms</td><td class="num">38 ms</td><td class="num">176 ms</td><td class="num">56,818 /s</td><td class="num">0</td><td><span class="partial">LSM / 最终一致</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="bug-grid">
+        <article class="bug-card reveal">
+          <div class="bug-top"><span class="bug-id">BUG B1</span><span class="bug-tag">最阴险</span></div>
+          <h3>UTF-8 无 BOM + 中文注释 + sqlcmd</h3>
+          <p>表建完只有 8 列，<code>TypeId</code> 整列被静默吞掉。中文注释的字节错位，把列定义行并进了注释。</p>
+          <p class="bug-fix">修复：UTF-8 with BOM。教训：编码不是细节，是会吞数据的基础设施。</p>
+        </article>
+        <article class="bug-card reveal">
+          <div class="bug-top"><span class="bug-id">BUG B10</span><span class="bug-tag">数量级</span></div>
+          <h3>MemorySizeBits = 20，不是 20MB</h3>
+          <p>FASTER 的内存预算写成了 2^20 = 1MB，装不下 6MB 数据，直接进入刷盘风暴，基准首轮卡死。</p>
+          <p class="bug-fix">修复：2^25 = 32MB。教训：位宽参数没有「大概」，只有数量级。</p>
+        </article>
+        <article class="bug-card reveal">
+          <div class="bug-top"><span class="bug-id">BUG B38</span><span class="bug-tag">1.1ms</span></div>
+          <h3>AddWithValue 把 DateTime 推断成 datetime</h3>
+          <p>历史行的时间戳被舍入到 3.33ms 精度，与原行差 1.1ms——审计时间线不再无损。</p>
+          <p class="bug-fix">修复：显式 <code>SqlDbType.DateTime2</code>。教训：ORM 的「方便」经常以精度为代价。</p>
+        </article>
+      </div>
+
+      <p class="evidence reveal"><span>E2</span> 证据口径：数字来自 <code>docs/UPDATE_LOG.md</code> 与白皮书；基准不是 TPC-C，未覆盖多机/云网络；更新后的 CAS/历史热路径仍需 3.0 复测。这正是「可证伪」的意思。</p>
+    </section>
+
+    <!-- ================= TIMELINE ================= -->
+    <section class="timeline-section section" id="timeline">
+      <div class="section-head reveal">
+        <p class="section-kicker"><span>05</span> THE JOURNEY / 26 轮</p>
+        <h2>从一张表的初探，<br>到 <span class="accent">system as history</span>。</h2>
+        <p class="section-lede">这不是一条「功能越加越多」的曲线。它更像一次持续 26 轮的自我打脸：每一次「理论上更快」，都被要求变成表格里的一行数字。</p>
+      </div>
+
+      <ol class="timeline-list" id="timeline-list">
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">01–02</span>
+          <div class="timeline-body">
+            <h3>一张表的初探</h3>
+            <p>单表 + 拆解/组装/路由，验证「对象 ↔ 行集合」往返成立。逐行写入只有 492 entities/s。</p>
+            <blockquote>先证明它能跑，再证明它值得跑。</blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">03–04</span>
+          <div class="timeline-body">
+            <h3>往返同化</h3>
+            <p>SqlBulkCopy + 子图预取：60,001 次往返 → 2 次。第 4 轮清空全表，引擎从空池自愈创世。</p>
+            <blockquote>「往返也是一种实体，图的整体搬运才是读写。」<cite>— 白皮书</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">05–06</span>
+          <div class="timeline-body">
+            <h3>物理换装</h3>
+            <p>内存优化表 → 进程内 ConcurrentDictionary / FASTER。累计 148×，每实体 13.7µs。</p>
+            <blockquote>「计算便宜到可以忽略，I/O 才是价格。」<cite>— 白皮书</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">07–09</span>
+          <div class="timeline-body">
+            <h3>引擎抽象</h3>
+            <p>IUniversalStore 让五引擎可插拔；SecuredStore 把 AES-GCM 与租户 AAD 包装进任意引擎。</p>
+            <blockquote>「改一行数据，换物理引擎。」<cite>— UPDATE_LOG</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">10–13</span>
+          <div class="timeline-body">
+            <h3>同构扩张</h3>
+            <p>安全策略、快照/图双模、边同构依次落进池子。100K 双向边压测：磁盘 B+ 树遍历反超内存全扫 30×。</p>
+            <blockquote>「同构没有消灭索引的必要性，只是把索引的实现责任交还给了物理引擎。」<cite>— UPDATE_LOG</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">14–16</span>
+          <div class="timeline-body">
+            <h3>壳子退场</h3>
+            <p>CLI 命令树、意图总线、Role=8 通用渲染器。一段 JSON 建出学生管理系统，前端零业务代码。</p>
+            <blockquote>「新增一种业务类型 = 往池子里插几行数据。」<cite>— 白皮书</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">17–19</span>
+          <div class="timeline-body">
+            <h3>工业加固</h3>
+            <p>Token 鉴权、DataType 显式化、级联删除、实例级 GetData。外部评审指出三洞，开始从「演示级」走向「引擎级」。</p>
+            <blockquote>「别让 61 个绿灯，掩盖 3 个洞。」<cite>— 评审</cite></blockquote>
+          </div>
+        </li>
+        <li class="timeline-item reveal">
+          <span class="timeline-dot" aria-hidden="true"></span>
+          <span class="timeline-round">20–26</span>
+          <div class="timeline-body">
+            <h3>语义收口</h3>
+            <p>CAS + Role=6 历史 + 统一信封 + UpdateGraph 事务 + 语义规格。81 个测试，6 个基准门禁。下一步：QueryData。</p>
+            <blockquote>「system as data 的另一条腿，是 system as history。」<cite>— 评审 / 日志</cite></blockquote>
+          </div>
+        </li>
+      </ol>
+
+      <div class="next-card reveal">
+        <span class="next-label">NEXT / v0.1 之后</span>
+        <p><b>QueryData</b> · 白皮书 3.0 · 多实例边界 · 结构化动作解释器</p>
+        <span class="next-note">功能冻结，先把语义和证据收干净。</span>
+      </div>
+    </section>
+
+    <!-- ================= CLOSING ================= -->
+    <section class="closing section">
+      <div class="closing-inner reveal">
+        <p class="section-kicker"><span>06</span> THE INVITATION</p>
+        <h2>如果一张表能长出万物，<br>你的下一个系统还需要几张表？</h2>
+        <p class="closing-sub">这不是一个框架的官网。这是一个架构师的实验展：26 轮、81 个测试、43 个被记录下来的坑。</p>
+        <div class="closing-actions">
+          <a class="btn btn-primary" href="../docs/GenesisWhitepaper.md">读白皮书 <span aria-hidden="true">↗</span></a>
+          <a class="btn btn-ghost" href="../docs/UPDATE_LOG.md">看 26 轮日志 <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="closing-note">Research artifact. Not production-ready. Every number measured.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <span class="brand-mark small" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>GENESIS <small>同构数据引擎</small></span>
+      </div>
+      <nav class="footer-links" aria-label="文档">
+        <a href="../docs/GenesisWhitepaper.md">白皮书</a>
+        <a href="../docs/UPDATE_LOG.md">更新日志</a>
+        <a href="../docs/Phase2SemanticSpec.md">语义规格</a>
+        <a href="../src/Emoking.DAL/">源码</a>
+      </nav>
+      <p class="footer-note">Built with one table and zero frameworks. <span class="mono">© 2026 Emoking</span></p>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <noscript><div class="noscript">交互演示需要 JavaScript；文字内容仍可正常阅读。</div></noscript>
+  <script src="assets/app.js"></script>
+</body>
+</html>
